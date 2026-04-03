@@ -541,8 +541,11 @@ function dC(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
 // Lista oficial de centros de custo do sistema:
 const CC_NAMES=new Set(["Administrativo Geral","Administrativo Financeiro","Administrativo Sócios","Tecnologia - Briu","Operação Geral","Operação - Seals","Operação - Bravo","Operação - Expansão","Operação - Smart","Operação - Social Media","People & Perfomance","Operação - Kings","Operação - Customer Success","Vendas Monetização","Vendas Isaas","A identificar","Operação - Snipers","Operação - Avengers"]);
 let _colMap=null;
-function pCSVL(l){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===','&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
-function pN(s){if(!s)return 0;return parseFloat(String(s).replace(/\./g,'').replace(',','.'))||0;}
+// Detecta separador automaticamente (ponto-e-vírgula ou vírgula)
+let _sep=',';
+function pCSVL(l){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===_sep&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
+function pN(s){if(!s)return 0;const clean=String(s).replace(/[R$\s]/g,'');// Handle both 1.234,56 and 1234.56
+const br=clean.replace(/\./g,'').replace(',','.');const us=clean.replace(',','');return parseFloat(br)||parseFloat(us)||0;}
 function buildColMap(headers){
   const h=headers.map(x=>(x||'').trim());
   const fi=name=>{const i=h.indexOf(name);return i;}
@@ -564,9 +567,17 @@ function buildColMap(headers){
 function parseCSVToRows(t){
   const lines=t.trim().split('\n').filter(l=>l.trim());
   if(lines.length<2)return{map:null,rows:[]};
-  _colMap=buildColMap(pCSVL(lines[0]));
+  // Pula "Tabela 1" ou outras linhas de título antes do header real
+  let startIdx=0;
+  for(let i=0;i<Math.min(5,lines.length);i++){
+    if(lines[i].includes('Data movimento')){startIdx=i;break;}
+  }
+  // Detecta separador: ponto-e-vírgula ou vírgula
+  const headerLine=lines[startIdx];
+  _sep=headerLine.includes(';')?';':',';
+  _colMap=buildColMap(pCSVL(headerLine));
   const rows=[];
-  for(let i=1;i<lines.length;i++){
+  for(let i=startIdx+1;i<lines.length;i++){
     const v=pCSVL(lines[i]);
     if(v.length<5)continue;
     rows.push(v.map(x=>(x||'').replace(/[\r\n]/g,'').trim()));
