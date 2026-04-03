@@ -539,7 +539,7 @@ function dC(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
 //   - Centros de Custo → varremos TODAS as colunas da linha procurando nomes conhecidos
 //   - Categorias → blocos detectados dinamicamente no header
 // Lista oficial de centros de custo do sistema:
-const CC_NAMES=new Set(["Administrativo Geral", "Administrativo Financeiro", "Administrativo Sócios", "Tecnologia - Briu", "Operação Geral", "Operação - Seals", "Operação - Bravo", "Operação - Expansão", "Operação - Smart", "Operação - Social Media", "People & Perfomance", "Operação - Kings", "Operação - Customer Success", "Vendas Monetização", "Vendas Isaas", "A identificar", "Operação - Snipers", "Operação - Avengers"]);
+const CC_NAMES=new Set(["Administrativo Geral","Administrativo Financeiro","Administrativo Sócios","Tecnologia - Briu","Operação Geral","Operação - Seals","Operação - Bravo","Operação - Expansão","Operação - Smart","Operação - Social Media","People & Perfomance","Operação - Kings","Operação - Customer Success","Vendas Monetização","Vendas Isaas","A identificar","Operação - Snipers","Operação - Avengers"]);
 let _colMap=null;
 function pCSVL(l){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===','&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
 function pN(s){if(!s)return 0;return parseFloat(String(s).replace(/\./g,'').replace(',','.'))||0;}
