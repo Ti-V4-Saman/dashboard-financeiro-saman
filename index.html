@@ -533,49 +533,30 @@ function gM(cat){
 function getMonths(data){const s=new Set();data.forEach(r=>{if(r.data){const y=r.data.getFullYear(),m=String(r.data.getMonth()+1).padStart(2,'0');s.add(y+'-'+m);}});return [...s].sort();}
 function mLbl(ym){const[y,m]=ym.split('-');return ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][+m-1]+'/'+y.slice(2);}
 function dC(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
-// ── CONTA AZUL CSV PARSER (dinâmico — lê headers para mapear colunas) ──
-// Funciona independente da ordem das colunas no CSV exportado do Sheets ou Conta Azul.
-// Regras de negócio:
-//   Valor do lançamento → coluna "Valor (R$)"
-//   Categorias e CCs → detectados pelos blocos "Categoria N" + "Valor na Categoria N"
-//                       seguidos de "Centro de Custo N" + "Valor no Centro de Custo N"
+// ── CONTA AZUL CSV PARSER ──────────────────────────────────────────────────
+// Estratégia híbrida:
+//   - Colunas fixas (data, valor, tipo etc.) → buscadas pelo nome no header
+//   - Centros de Custo → varremos TODAS as colunas da linha procurando nomes conhecidos
+//   - Categorias → blocos detectados dinamicamente no header
+// Lista oficial de centros de custo do sistema:
+const CC_NAMES=new Set(["Administrativo Geral", "Administrativo Financeiro", "Administrativo Sócios", "Tecnologia - Briu", "Operação Geral", "Operação - Seals", "Operação - Bravo", "Operação - Expansão", "Operação - Smart", "Operação - Social Media", "People & Perfomance", "Operação - Kings", "Operação - Customer Success", "Vendas Monetização", "Vendas Isaas", "A identificar", "Operação - Snipers", "Operação - Avengers"]);
 let _colMap=null;
 function pCSVL(l){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===','&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
 function pN(s){if(!s)return 0;return parseFloat(String(s).replace(/\./g,'').replace(',','.'))||0;}
 function buildColMap(headers){
   const h=headers.map(x=>(x||'').trim());
+  const fi=name=>{const i=h.indexOf(name);return i;}
   const map={
-    data:h.indexOf('Data movimento'),
-    fornecedor:h.indexOf('Nome do fornecedor/cliente'),
-    desc:h.indexOf('Descrição'),
-    tipo:h.indexOf('Tipo'),
-    origem:h.indexOf('Origem do lançamento'),
-    conta:h.indexOf('Conta bancária'),
-    forma:h.indexOf('Forma de pgto/recbto'),
-    valor:h.indexOf('Valor (R$)'),
-    situacao:h.indexOf('Situação'),
-    blocos:[]
+    data:fi('Data movimento'),fornecedor:fi('Nome do fornecedor/cliente'),
+    desc:fi('Descrição'),tipo:fi('Tipo'),origem:fi('Origem do lançamento'),
+    conta:fi('Conta bancária'),forma:fi('Forma de pgto/recbto'),
+    valor:fi('Valor (R$)'),situacao:fi('Situação'),blocos:[]
   };
-  // Detecta blocos de categoria dinamicamente
-  // Cada bloco: "Categoria N" seguido de "Valor na Categoria N" seguido de pares de CC
   for(let i=0;i<h.length;i++){
     if(/^Categoria\s*\d*$/.test(h[i])){
-      const catIdx=i;
-      const valCatIdx=i+1;
+      const catIdx=i,valCatIdx=i+1;
       if(valCatIdx>=h.length||!h[valCatIdx].includes('Valor na Categoria'))continue;
-      const ccs=[];
-      let j=valCatIdx+1;
-      while(j<h.length){
-        if(/^Categoria\s*\d*$/.test(h[j]))break; // próximo bloco
-        if(/centro de custo/i.test(h[j])){
-          const ccIdx=j;
-          const valCCIdx=j+1;
-          if(valCCIdx<h.length&&/valor no centro de custo/i.test(h[valCCIdx])){
-            ccs.push([ccIdx,valCCIdx]);j=valCCIdx+1;
-          } else {ccs.push([ccIdx,-1]);j++;}
-        } else break;
-      }
-      map.blocos.push({catIdx,valCatIdx,ccs});
+      map.blocos.push({catIdx,valCatIdx});
     }
   }
   return map;
@@ -583,8 +564,7 @@ function buildColMap(headers){
 function parseCSVToRows(t){
   const lines=t.trim().split('\n').filter(l=>l.trim());
   if(lines.length<2)return{map:null,rows:[]};
-  const headers=pCSVL(lines[0]);
-  _colMap=buildColMap(headers);
+  _colMap=buildColMap(pCSVL(lines[0]));
   const rows=[];
   for(let i=1;i<lines.length;i++){
     const v=pCSVL(lines[i]);
@@ -596,19 +576,40 @@ function parseCSVToRows(t){
 function rowToLanc(v){
   if(!_colMap)return null;
   const m=_colMap;
-  const get=i=>(i>=0&&i<v.length?v[i]:'').trim();
-  const orig=get(m.origem), cat1raw=get(m.blocos[0]?.catIdx??-1);
+  const get=i=>(i>=0&&i<v.length?v[i]||'':'').trim();
+  const orig=get(m.origem);
+  const cat1raw=m.blocos.length>0?get(m.blocos[0].catIdx):'';
   const isTr=orig==='Transferência'||cat1raw==='Transferência de Entrada'||cat1raw==='Transferência de Saída'||cat1raw==='Saldo Inicial';
-  const cats=[];
+  // Categorias via blocos do colmap
+  const catList=[];
   for(const bloco of m.blocos){
     const nm=get(bloco.catIdx);if(!nm)continue;
-    const ccs=[];
-    for(const[ci,vi] of bloco.ccs){const cn=get(ci);if(cn)ccs.push({nome:cn,valor:pN(get(vi))});}
-    cats.push({nome:nm,valor:pN(get(bloco.valCatIdx)),ccs});
+    catList.push({nome:nm,valor:pN(get(bloco.valCatIdx))});
   }
-  const cat1=cats[0]?.nome||'';
-  const cc1=cats.flatMap(c=>c.ccs).find(c=>c.nome)?.nome||'';
-  return{data:pD(get(m.data)),desc:get(m.desc),fornecedor:get(m.fornecedor),tipo:get(m.tipo)||'Despesa',origem:orig,conta:get(m.conta),forma:get(m.forma),valor:pN(get(m.valor)),situacao:get(m.situacao),isTransfer:isTr,cat1,cc1,categorias:cats};
+  // Centros de custo: varrer TODAS as colunas procurando nomes conhecidos
+  // A coluna seguinte ao CC name contém o valor do rateio
+  const ccList=[];
+  for(let i=0;i<v.length;i++){
+    const cell=v[i].trim();
+    if(CC_NAMES.has(cell)){
+      const valCC=i+1<v.length?pN(v[i+1]):0;
+      ccList.push({nome:cell,valor:valCC});
+    }
+  }
+  // Monta estrutura de categorias com CCs (associa CCs às categorias por ordem)
+  const categorias=catList.map((cat,idx)=>{
+    return{nome:cat.nome,valor:cat.valor,ccs:idx===0?ccList:[]};
+  });
+  // Se não há categorias mas há CCs, cria uma entrada genérica
+  if(categorias.length===0&&ccList.length>0){
+    categorias.push({nome:'',valor:pN(get(m.valor)),ccs:ccList});
+  }
+  const cat1=categorias[0]?.nome||'';
+  const cc1=ccList[0]?.nome||'';
+  return{data:pD(get(m.data)),desc:get(m.desc),fornecedor:get(m.fornecedor),
+    tipo:get(m.tipo)||'Despesa',origem:orig,conta:get(m.conta),forma:get(m.forma),
+    valor:pN(get(m.valor)),situacao:get(m.situacao),isTransfer:isTr,
+    cat1,cc1,categorias,_ccList:ccList};
 }
 
 // ── LOAD ───────────────────────────────────────────────────
@@ -650,7 +651,7 @@ async function loadData(){
 // ── FILTERS ────────────────────────────────────────────────
 function populateFilters(){
   const cats=new Set(),ccs=new Set(),contas=new Set();
-  allData.forEach(r=>{if(r.cat1)cats.add(gM(r.cat1));(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c.nome).forEach(c=>ccs.add(c.nome));if(r.conta)contas.add(r.conta);});
+  allData.forEach(r=>{if(r.cat1)cats.add(gM(r.cat1));(r._ccList||[]).filter(c=>c.nome).forEach(c=>ccs.add(c.nome));if(r.conta)contas.add(r.conta);});
   const cs=document.getElementById('fCat');cs.innerHTML='<option value="">Todas as categorias</option>';
   [...cats].sort().forEach(c=>{const o=new Option(c,c);cs.appendChild(o);});
   const cc=document.getElementById('fCC');cc.innerHTML='<option value="">Todos os centros</option>';
@@ -674,7 +675,7 @@ function applyFilters(){
     if(ds&&r.data<new Date(ds))return false;
     if(de&&r.data>new Date(de+'T23:59:59'))return false;
     if(cat&&gM(r.cat1)!==cat)return false;
-    if(cc){const allCCs=r.categorias?r.categorias.flatMap(c=>c.ccs).map(c=>c.nome):[];if(!allCCs.includes(cc))return false;}
+    if(cc){const allCCs=(r._ccList||[]).map(c=>c.nome);if(!allCCs.includes(cc))return false;}
     if(tp&&r.tipo!==tp)return false;
     if(sit&&r.situacao!==sit)return false;
     return true;
@@ -693,7 +694,7 @@ function rGeral(){
   const rec=op.filter(r=>r.tipo==='Receita').reduce((s,r)=>s+Math.abs(r.valor),0);
   const desp=op.filter(r=>r.tipo==='Despesa').reduce((s,r)=>s+Math.abs(r.valor),0);
   const res=rec-desp,atras=op.filter(r=>r.situacao==='Atrasado').length;
-  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)).length,semCC=op.filter(r=>{const a=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return a.length===0;}).length;
+  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)).length,semCC=op.filter(r=>(r._ccList||[]).length===0).length;
   const margem=rec>0?(res/rec*100):0;
   document.getElementById('kRow').innerHTML=`
     <div class="kpi"><div class="kpi-acc" style="background:var(--green)"></div>
@@ -748,7 +749,7 @@ function rGeral(){
   document.getElementById('blDesp').innerHTML=sd.map(([l,v],i)=>`<div class="bi"><div class="bl-lbl" title="${l}">${l}</div><div class="bl-amt neg">${fR(v)}</div><div class="bt"><div class="bf" style="width:${(v/md*100).toFixed(1)}%;background:${P[i%P.length]}"></div></div></div>`).join('');
 
   // Bar list CC
-  const cc2={}; op.filter(r=>r.tipo==='Despesa').forEach(r=>{const allCCs=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c.nome); if(allCCs.length===0){cc2['Sem CC']=(cc2['Sem CC']||0)+Math.abs(r.valor);return;} allCCs.forEach(({nome,valor})=>{const v=valor!==0?Math.abs(valor):Math.abs(r.valor);cc2[nome]=(cc2[nome]||0)+v;});});
+  const cc2={};op.filter(r=>r.tipo==='Despesa').forEach(r=>{const allCCs=r._ccList||[];if(allCCs.length===0){cc2['Sem CC']=(cc2['Sem CC']||0)+Math.abs(r.valor);return;}allCCs.forEach(({nome,valor})=>{const v=valor&&valor!==0?Math.abs(valor):Math.abs(r.valor);cc2[nome]=(cc2[nome]||0)+v;});});
   const sc=Object.entries(cc2).sort((a,b)=>b[1]-a[1]).slice(0,10),mc=sc[0]?sc[0][1]:1;
   document.getElementById('blCC').innerHTML=sc.map(([l,v],i)=>`<div class="bi"><div class="bl-lbl" title="${l}">${l}</div><div class="bl-amt" style="color:var(--amber)">${fR(v)}</div><div class="bt"><div class="bf" style="width:${(v/mc*100).toFixed(1)}%;background:${P[i%P.length]}"></div></div></div>`).join('');
 }
@@ -802,7 +803,7 @@ function filterSubTable(){
 function rCC(){
   const op=filteredData.filter(r=>!r.isTransfer);
   const ccM={};
-  op.forEach(r=>{const allCCs=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c.nome); if(allCCs.length===0){const key='Sem CC';if(!ccM[key])ccM[key]={rec:0,desp:0,n:0};const v=Math.abs(r.valor);if(r.tipo==='Receita')ccM[key].rec+=v;else ccM[key].desp+=v;ccM[key].n++;return;} allCCs.forEach(({nome,valor})=>{if(!nome)return;const v=valor!==0?Math.abs(valor):Math.abs(r.valor);if(!ccM[nome])ccM[nome]={rec:0,desp:0,n:0};if(r.tipo==='Receita')ccM[nome].rec+=v;else ccM[nome].desp+=v;ccM[nome].n++;});});
+  op.forEach(r=>{const allCCs=r._ccList||[];if(allCCs.length===0){const key='Sem CC';if(!ccM[key])ccM[key]={rec:0,desp:0,n:0};const v=Math.abs(r.valor);if(r.tipo==='Receita')ccM[key].rec+=v;else ccM[key].desp+=v;ccM[key].n++;return;}allCCs.forEach(({nome,valor})=>{if(!nome)return;const v=valor&&valor!==0?Math.abs(valor):Math.abs(r.valor);if(!ccM[nome])ccM[nome]={rec:0,desp:0,n:0};if(r.tipo==='Receita')ccM[nome].rec+=v;else ccM[nome].desp+=v;ccM[nome].n++;});});
   const list=Object.entries(ccM).sort((a,b)=>(b[1].rec+b[1].desp)-(a[1].rec+a[1].desp));
   const labels=list.map(([k])=>k),recs=list.map(([,v])=>v.rec),desps=list.map(([,v])=>v.desp),ress=list.map(([,v])=>v.rec-v.desp);
 
@@ -862,7 +863,7 @@ function filterCompTable(){const q=document.getElementById('srchComp').value.toL
 // ── QUALIDADE & INSIGHTS ───────────────────────────────────
 function rQual(){
   const op=filteredData.filter(r=>!r.isTransfer);
-  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)),semCC=op.filter(r=>{const a=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return a.length===0;}),atrasados=op.filter(r=>r.situacao==='Atrasado'),total=op.length;
+  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)),semCC=op.filter(r=>(r._ccList||[]).length===0),atrasados=op.filter(r=>r.situacao==='Atrasado'),total=op.length;
   const rec=op.filter(r=>r.tipo==='Receita').reduce((s,r)=>s+Math.abs(r.valor),0);
   const desp=op.filter(r=>r.tipo==='Despesa').reduce((s,r)=>s+Math.abs(r.valor),0);
   const res=rec-desp,margem=rec>0?res/rec*100:0;
@@ -993,7 +994,7 @@ function renderLancTable(){
     <td style="text-align:right" class="${r.tipo==='Receita'?'pos':'neg'}">${fR(Math.abs(r.valor))}</td>
     <td><span class="bdg ${sit2bdg(r.situacao)}">${r.situacao}</span></td>
     <td class="ttr" style="max-width:150px">${(()=>{const cat=(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)?r.categorias[0].nome:'';return cat?`<span style='color:var(--ink2)' title='${cat}'>${cat}</span>`:`<span style='color:var(--red)'>⚠ Sem categoria</span>`;})()}</td>
-    <td class="ttr" style="max-width:130px">${(()=>{const allCC=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return allCC.length>0?`<span style='color:var(--ink2)'>${allCC[0].nome}${allCC.length>1?' +'+( allCC.length-1):''}</span>`:`<span style='color:var(--red)'>⚠ Sem CC</span>`;})()}</td>
+    <td class="ttr" style="max-width:130px">${(()=>{const allCC=r._ccList||[];return allCC.length>0?`<span style='color:var(--ink2)'>${allCC[0].nome}${allCC.length>1?' +'+(allCC.length-1):''}</span>`:`<span style='color:var(--red)'>⚠ Sem CC</span>`;})()}</td>
     <td style="color:var(--ink3);font-size:10px">${r.origem}</td>
   </tr>`).join('');
   const tot=Math.ceil(total/PAGE)||1;
