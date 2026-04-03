@@ -569,7 +569,7 @@ function parseCSVToRows(t){
   for(let i=1;i<lines.length;i++){
     const v=pCSVL(lines[i]);
     if(v.length<5)continue;
-    rows.push(v.map(x=>(x||'').trim()));
+    rows.push(v.map(x=>(x||'').replace(/[\r\n]/g,'').trim()));
   }
   return{map:_colMap,rows};
 }
@@ -583,17 +583,31 @@ function rowToLanc(v){
   // Categorias via blocos do colmap
   const catList=[];
   for(const bloco of m.blocos){
-    const nm=get(bloco.catIdx);if(!nm)continue;
+    const nm=(get(bloco.catIdx)||'').replace(/[\r\n\t]/g,'').trim();if(!nm)continue;
     catList.push({nome:nm,valor:pN(get(bloco.valCatIdx))});
   }
   // Centros de custo: varrer TODAS as colunas procurando nomes conhecidos
-  // A coluna seguinte ao CC name contém o valor do rateio
+  // Usa lookup normalizado (lowercase, sem espaços extras, sem chars especiais)
   const ccList=[];
   for(let i=0;i<v.length;i++){
-    const cell=v[i].trim();
-    if(CC_NAMES.has(cell)){
+    const raw=v[i]||'';
+    // Normaliza: remove espaços, \r, \n, e converte para lowercase para comparação
+    const norm=raw.replace(/[\r\n\t]/g,'').trim();
+    if(!norm)continue;
+    // Busca exata primeiro
+    if(CC_NAMES.has(norm)){
       const valCC=i+1<v.length?pN(v[i+1]):0;
-      ccList.push({nome:cell,valor:valCC});
+      ccList.push({nome:norm,valor:valCC});
+      continue;
+    }
+    // Busca normalizada (lowercase) como fallback
+    const normLow=norm.toLowerCase();
+    for(const cc of CC_NAMES){
+      if(cc.toLowerCase()===normLow){
+        const valCC=i+1<v.length?pN(v[i+1]):0;
+        ccList.push({nome:cc,valor:valCC});
+        break;
+      }
     }
   }
   // Monta estrutura de categorias com CCs (associa CCs às categorias por ordem)
@@ -635,7 +649,12 @@ async function loadData(){
       const {rows}=parseCSVToRows(await res.text());
       allData=rows.map(rowToLanc).filter(r=>r&&r.data);
       document.getElementById('sDot').style.background='var(--green)';
-      document.getElementById('sTxt').textContent='Atualizado às '+new Date().toLocaleTimeString('pt-BR');
+      const semCCCount=allData.filter(r=>!r.isTransfer&&(r._ccList||[]).length===0).length;
+      const totalOp=allData.filter(r=>!r.isTransfer).length;
+      // Diagnóstico: mostra info sobre a estrutura do CSV
+      const sampleRow=rows[0]||[];
+      const diagInfo=`Atualizado às ${new Date().toLocaleTimeString('pt-BR')} · ${allData.length} lançamentos · ${sampleRow.length} colunas no CSV · ${semCCCount}/${totalOp} sem CC`;
+      document.getElementById('sTxt').textContent=diagInfo;
     }
     populateFilters();applyFilters();
   }catch(e){
