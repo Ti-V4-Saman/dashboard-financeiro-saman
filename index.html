@@ -642,7 +642,7 @@ function rGeral(){
   const rec=op.filter(r=>r.tipo==='Receita').reduce((s,r)=>s+Math.abs(r.valor),0);
   const desp=op.filter(r=>r.tipo==='Despesa').reduce((s,r)=>s+Math.abs(r.valor),0);
   const res=rec-desp,atras=op.filter(r=>r.situacao==='Atrasado').length;
-  const semCat=op.filter(r=>!r.cat1).length,semCC=op.filter(r=>{const a=r.categorias?r.categorias.flatMap(c=>c.ccs).filter(c=>c.nome):[];return a.length===0;}).length;
+  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)).length,semCC=op.filter(r=>{const a=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return a.length===0;}).length;
   const margem=rec>0?(res/rec*100):0;
   document.getElementById('kRow').innerHTML=`
     <div class="kpi"><div class="kpi-acc" style="background:var(--green)"></div>
@@ -811,7 +811,7 @@ function filterCompTable(){const q=document.getElementById('srchComp').value.toL
 // ── QUALIDADE & INSIGHTS ───────────────────────────────────
 function rQual(){
   const op=filteredData.filter(r=>!r.isTransfer);
-  const semCat=op.filter(r=>!r.cat1),semCC=op.filter(r=>{const a=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c.nome);return a.length===0;}),atrasados=op.filter(r=>r.situacao==='Atrasado'),total=op.length;
+  const semCat=op.filter(r=>!(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)),semCC=op.filter(r=>{const a=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return a.length===0;}),atrasados=op.filter(r=>r.situacao==='Atrasado'),total=op.length;
   const rec=op.filter(r=>r.tipo==='Receita').reduce((s,r)=>s+Math.abs(r.valor),0);
   const desp=op.filter(r=>r.tipo==='Despesa').reduce((s,r)=>s+Math.abs(r.valor),0);
   const res=rec-desp,margem=rec>0?res/rec*100:0;
@@ -941,8 +941,8 @@ function renderLancTable(){
     <td style="color:var(--ink3)">${r.forma}</td>
     <td style="text-align:right" class="${r.tipo==='Receita'?'pos':'neg'}">${fR(Math.abs(r.valor))}</td>
     <td><span class="bdg ${sit2bdg(r.situacao)}">${r.situacao}</span></td>
-    <td class="ttr" title="${r.cat1}" style="color:${r.cat1?'var(--ink2)':'var(--red)'};max-width:150px">${r.cat1||'⚠ Sem categoria'}</td>
-    <td class="ttr" title="${r.cc1}" style="color:${r.cc1?'var(--ink2)':'var(--red)'};max-width:130px">${r.cc1||'⚠ Sem CC'}</td>
+    <td class="ttr" style="max-width:150px">${(()=>{const cat=(r.categorias&&r.categorias.length>0&&r.categorias[0].nome)?r.categorias[0].nome:'';return cat?`<span style='color:var(--ink2)' title='${cat}'>${cat}</span>`:`<span style='color:var(--red)'>⚠ Sem categoria</span>`;})()}</td>
+    <td class="ttr" style="max-width:130px">${(()=>{const allCC=(r.categorias||[]).flatMap(c=>c.ccs).filter(c=>c&&c.nome&&c.nome.trim());return allCC.length>0?`<span style='color:var(--ink2)'>${allCC[0].nome}${allCC.length>1?' +'+( allCC.length-1):''}</span>`:`<span style='color:var(--red)'>⚠ Sem CC</span>`;})()}</td>
     <td style="color:var(--ink3);font-size:10px">${r.origem}</td>
   </tr>`).join('');
   const tot=Math.ceil(total/PAGE)||1;
