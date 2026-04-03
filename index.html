@@ -533,52 +533,40 @@ function gM(cat){
 function getMonths(data){const s=new Set();data.forEach(r=>{if(r.data){const y=r.data.getFullYear(),m=String(r.data.getMonth()+1).padStart(2,'0');s.add(y+'-'+m);}});return [...s].sort();}
 function mLbl(ym){const[y,m]=ym.split('-');return ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][+m-1]+'/'+y.slice(2);}
 function dC(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
-// ── CONTA AZUL CSV PARSER ──────────────────────────────────────────────────
-// Estratégia híbrida:
-//   - Colunas fixas (data, valor, tipo etc.) → buscadas pelo nome no header
-//   - Centros de Custo → varremos TODAS as colunas da linha procurando nomes conhecidos
-//   - Categorias → blocos detectados dinamicamente no header
-// Lista oficial de centros de custo do sistema:
-const CC_NAMES=new Set(["Administrativo Geral","Administrativo Financeiro","Administrativo Sócios","Tecnologia - Briu","Operação Geral","Operação - Seals","Operação - Bravo","Operação - Expansão","Operação - Smart","Operação - Social Media","People & Perfomance","Operação - Kings","Operação - Customer Success","Vendas Monetização","Vendas Isaas","A identificar","Operação - Snipers","Operação - Avengers"]);
+// ── CONTA AZUL CSV PARSER — Formato Pivot (1 linha por CC) ────────────────
+// Formato: relatório analítico do Conta Azul
+// Colunas-chave: Data da baixa, A pagar/receber, Fornecedor, Centro de custo,
+//                Categoria, Conta, Descrição, Forma, Origem, Situação, Valor
 let _colMap=null;
-// Detecta separador automaticamente (ponto-e-vírgula ou vírgula)
-let _sep=',';
-function pCSVL(l){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===_sep&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
-function pN(s){if(!s)return 0;const clean=String(s).replace(/[R$\s]/g,'');// Handle both 1.234,56 and 1234.56
-const br=clean.replace(/\./g,'').replace(',','.');const us=clean.replace(',','');return parseFloat(br)||parseFloat(us)||0;}
-function buildColMap(headers){
-  const h=headers.map(x=>(x||'').trim());
-  const fi=name=>{const i=h.indexOf(name);return i;}
-  const map={
-    data:fi('Data movimento'),fornecedor:fi('Nome do fornecedor/cliente'),
-    desc:fi('Descrição'),tipo:fi('Tipo'),origem:fi('Origem do lançamento'),
-    conta:fi('Conta bancária'),forma:fi('Forma de pgto/recbto'),
-    valor:fi('Valor (R$)'),situacao:fi('Situação'),blocos:[]
-  };
-  for(let i=0;i<h.length;i++){
-    if(/^Categoria\s*\d*$/.test(h[i])){
-      const catIdx=i,valCatIdx=i+1;
-      if(valCatIdx>=h.length||!h[valCatIdx].includes('Valor na Categoria'))continue;
-      map.blocos.push({catIdx,valCatIdx});
-    }
-  }
-  return map;
-}
+function pCSVL(l,sep){const r=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===sep&&!q){r.push(c);c='';}else c+=ch;}r.push(c);return r;}
+function pN(s){if(!s||s==='(em branco)')return 0;try{return parseFloat(String(s).replace(/\./g,'').replace(',','.'))||0;}catch{return 0;}}
 function parseCSVToRows(t){
   const lines=t.trim().split('\n').filter(l=>l.trim());
   if(lines.length<2)return{map:null,rows:[]};
-  // Pula "Tabela 1" ou outras linhas de título antes do header real
-  let startIdx=0;
+  let hIdx=0;
   for(let i=0;i<Math.min(5,lines.length);i++){
-    if(lines[i].includes('Data movimento')){startIdx=i;break;}
+    if(lines[i].includes('Categoria')||lines[i].includes('Data de vencimento')){hIdx=i;break;}
   }
-  // Detecta separador: ponto-e-vírgula ou vírgula
-  const headerLine=lines[startIdx];
-  _sep=headerLine.includes(';')?';':',';
-  _colMap=buildColMap(pCSVL(headerLine));
+  const sep=lines[hIdx].includes(';')?';':',';
+  const headers=pCSVL(lines[hIdx],sep).map(x=>x.trim());
+  const fi=name=>{const i=headers.indexOf(name);return i;};
+  _colMap={
+    data:fi('Data da baixa ou previs\u00e3o'),
+    fornecedor:fi('Nome do cliente ou fornecedor'),
+    desc:fi('Descri\u00e7\u00e3o do lan\u00e7amento'),
+    tipo:fi('A pagar ou a receber'),
+    origem:fi('Origem do lan\u00e7amento'),
+    conta:fi('Conta financeira'),
+    forma:fi('Forma de pagamento'),
+    valor:fi('Valor'),
+    situacao:fi('Situa\u00e7\u00e3o'),
+    categoria:fi('Categoria'),
+    cc:fi('Centro de custo'),
+    sep
+  };
   const rows=[];
-  for(let i=startIdx+1;i<lines.length;i++){
-    const v=pCSVL(lines[i]);
+  for(let i=hIdx+1;i<lines.length;i++){
+    const v=pCSVL(lines[i],sep);
     if(v.length<5)continue;
     rows.push(v.map(x=>(x||'').replace(/[\r\n]/g,'').trim()));
   }
@@ -589,52 +577,22 @@ function rowToLanc(v){
   const m=_colMap;
   const get=i=>(i>=0&&i<v.length?v[i]||'':'').trim();
   const orig=get(m.origem);
-  const cat1raw=m.blocos.length>0?get(m.blocos[0].catIdx):'';
-  const isTr=orig==='Transferência'||cat1raw==='Transferência de Entrada'||cat1raw==='Transferência de Saída'||cat1raw==='Saldo Inicial';
-  // Categorias via blocos do colmap
-  const catList=[];
-  for(const bloco of m.blocos){
-    const nm=(get(bloco.catIdx)||'').replace(/[\r\n\t]/g,'').trim();if(!nm)continue;
-    catList.push({nome:nm,valor:pN(get(bloco.valCatIdx))});
-  }
-  // Centros de custo: varrer TODAS as colunas procurando nomes conhecidos
-  // Usa lookup normalizado (lowercase, sem espaços extras, sem chars especiais)
-  const ccList=[];
-  for(let i=0;i<v.length;i++){
-    const raw=v[i]||'';
-    // Normaliza: remove espaços, \r, \n, e converte para lowercase para comparação
-    const norm=raw.replace(/[\r\n\t]/g,'').trim();
-    if(!norm)continue;
-    // Busca exata primeiro
-    if(CC_NAMES.has(norm)){
-      const valCC=i+1<v.length?pN(v[i+1]):0;
-      ccList.push({nome:norm,valor:valCC});
-      continue;
-    }
-    // Busca normalizada (lowercase) como fallback
-    const normLow=norm.toLowerCase();
-    for(const cc of CC_NAMES){
-      if(cc.toLowerCase()===normLow){
-        const valCC=i+1<v.length?pN(v[i+1]):0;
-        ccList.push({nome:cc,valor:valCC});
-        break;
-      }
-    }
-  }
-  // Monta estrutura de categorias com CCs (associa CCs às categorias por ordem)
-  const categorias=catList.map((cat,idx)=>{
-    return{nome:cat.nome,valor:cat.valor,ccs:idx===0?ccList:[]};
-  });
-  // Se não há categorias mas há CCs, cria uma entrada genérica
-  if(categorias.length===0&&ccList.length>0){
-    categorias.push({nome:'',valor:pN(get(m.valor)),ccs:ccList});
-  }
-  const cat1=categorias[0]?.nome||'';
-  const cc1=ccList[0]?.nome||'';
-  return{data:pD(get(m.data)),desc:get(m.desc),fornecedor:get(m.fornecedor),
-    tipo:get(m.tipo)||'Despesa',origem:orig,conta:get(m.conta),forma:get(m.forma),
-    valor:pN(get(m.valor)),situacao:get(m.situacao),isTransfer:isTr,
-    cat1,cc1,categorias,_ccList:ccList};
+  const cat=get(m.categoria);
+  const TCATS=['Transfer\u00eancia de Entrada','Transfer\u00eancia de Sa\u00edda','Saldo Inicial'];
+  const isTr=orig==='Transfer\u00eancia'||TCATS.includes(cat);
+  const tipoRaw=get(m.tipo);
+  const tipo=tipoRaw==='Contas a receber'?'Receita':'Despesa';
+  const ccNome=get(m.cc);
+  const hasCC=ccNome&&ccNome!=='(em branco)';
+  const val=Math.abs(pN(get(m.valor)));
+  const ccList=hasCC?[{nome:ccNome,valor:val}]:[];
+  const categorias=cat?[{nome:cat,valor:val,ccs:ccList}]:[];
+  return{
+    data:pD(get(m.data)),desc:get(m.desc),fornecedor:get(m.fornecedor),
+    tipo,origem:orig,conta:get(m.conta),forma:get(m.forma),
+    valor:val,situacao:get(m.situacao),isTransfer:isTr,
+    cat1:cat,cc1:hasCC?ccNome:'',categorias,_ccList:ccList
+  };
 }
 
 // ── LOAD ───────────────────────────────────────────────────
