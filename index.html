@@ -641,8 +641,12 @@ function populateFilters(){
   [...ccs].sort().forEach(c=>{const o=new Option(c,c);cc.appendChild(o);});
   const ct=document.getElementById('fLConta');ct.innerHTML='<option value="">Todas as contas</option>';
   [...contas].sort().forEach(c=>{const o=new Option(c,c);ct.appendChild(o);});
-  const dts=allData.map(r=>r.data).sort((a,b)=>a-b);
-  if(dts.length){document.getElementById('fDs').value=fDtI(dts[0]);document.getElementById('fDe').value=fDtI(dts[dts.length-1]);}
+  // Período padrão: mês vigente
+  const now=new Date();
+  const firstDay=new Date(now.getFullYear(),now.getMonth(),1);
+  const lastDay=new Date(now.getFullYear(),now.getMonth()+1,0);
+  document.getElementById('fDs').value=fDtI(firstDay);
+  document.getElementById('fDe').value=fDtI(lastDay);
   const months=getMonths(allData);
   const m1=document.getElementById('cM1'),m2=document.getElementById('cM2');
   m1.innerHTML='';m2.innerHTML='';
