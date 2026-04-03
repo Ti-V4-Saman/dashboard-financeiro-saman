@@ -413,7 +413,7 @@ tbody tr:hover td{background:var(--surf2)}
 </div><!-- /main -->
 
 <script>
-const CSV_URL='https://docs.google.com/spreadsheets/d/e/2PACX-1vQhRRtp3CBphMX-zuYxJkZISLFop1k_hFr5kgvAtgiGIpx0XeYQkWk4O8bVPqJg34gkJEeBV9BHFmHZ/pub?gid=1007231623&single=true&output=csv';
+const CSV_URL='/extrato.csv'; // Arquivo local — atualizar via GitHub
 const USE_MOCK=false; // Sheets // ← false para conectar ao Sheets
 
 const MOCK = [
@@ -644,17 +644,12 @@ async function loadData(){
       document.getElementById('sDot').classList.add('warn');
       document.getElementById('sTxt').textContent='Preview · dados embutidos';
     }else{
-      const res=await fetch(CSV_URL+'&t='+Date.now(),{cache:'no-store'});
+      const res=await fetch(CSV_URL+'?t='+Date.now(),{cache:'no-store'});
       if(!res.ok)throw new Error('Erro CSV');
       const {rows}=parseCSVToRows(await res.text());
       allData=rows.map(rowToLanc).filter(r=>r&&r.data);
       document.getElementById('sDot').style.background='var(--green)';
-      const semCCCount=allData.filter(r=>!r.isTransfer&&(r._ccList||[]).length===0).length;
-      const totalOp=allData.filter(r=>!r.isTransfer).length;
-      // Diagnóstico: mostra info sobre a estrutura do CSV
-      const sampleRow=rows[0]||[];
-      const diagInfo=`Atualizado às ${new Date().toLocaleTimeString('pt-BR')} · ${allData.length} lançamentos · ${sampleRow.length} colunas no CSV · ${semCCCount}/${totalOp} sem CC`;
-      document.getElementById('sTxt').textContent=diagInfo;
+      document.getElementById('sTxt').textContent='Atualizado às '+new Date().toLocaleTimeString('pt-BR');
     }
     populateFilters();applyFilters();
   }catch(e){
