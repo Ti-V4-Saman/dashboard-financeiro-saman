@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useSession } from 'next-auth/react'
 import { TopBar } from './TopBar'
 import { FilterBar } from './FilterBar'
 import { TabNav, type Tab } from './TabNav'
@@ -11,6 +12,7 @@ import { Comparativo } from './tabs/Comparativo'
 import { Qualidade } from './tabs/Qualidade'
 import { Lancamentos } from './tabs/Lancamentos'
 import { MetasTab } from './tabs/Metas'
+import { UsuariosTab } from './tabs/Usuarios'
 import type { Lancamento, Filters } from '@/lib/types'
 
 interface DashboardLayoutProps {
@@ -31,12 +33,14 @@ export function DashboardLayout({
   refresh,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
+  const { data: session } = useSession()
+  const isAdmin = (session?.user as { isAdmin?: boolean })?.isAdmin === true
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
       <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
       <FilterBar filters={filters} setFilters={setFilters} allData={allData} />
-      <TabNav active={activeTab} onChange={setActiveTab} />
+      <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} />
 
       <main className="px-6 py-5 w-full">
         {isLoading ? (
@@ -66,13 +70,14 @@ export function DashboardLayout({
           </div>
         ) : (
           <div className="animate-fadeIn">
-            {activeTab === 'visao' && <VisaoGeral data={filteredData} />}
-            {activeTab === 'dre' && <DRE data={filteredData} />}
-            {activeTab === 'cc' && <CentrosCusto data={filteredData} />}
+            {activeTab === 'visao'       && <VisaoGeral data={filteredData} />}
+            {activeTab === 'dre'         && <DRE data={filteredData} />}
+            {activeTab === 'cc'          && <CentrosCusto data={filteredData} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} />}
-            {activeTab === 'qualidade' && <Qualidade data={filteredData} />}
+            {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
             {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
-            {activeTab === 'metas' && <MetasTab allData={allData} filters={filters} />}
+            {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} />}
+            {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
           </div>
         )}
       </main>

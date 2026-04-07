@@ -1,23 +1,27 @@
 'use client'
 
-type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas'
+type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'acesso'
 
 interface TabNavProps {
   active: Tab
   onChange: (t: Tab) => void
+  isAdmin?: boolean
 }
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'visao', label: 'Visão Geral' },
-  { id: 'dre', label: 'DRE' },
-  { id: 'cc', label: 'Centros de Custo' },
+const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
+  { id: 'visao',       label: 'Visão Geral' },
+  { id: 'dre',         label: 'DRE' },
+  { id: 'cc',          label: 'Centros de Custo' },
   { id: 'comparativo', label: 'Comparativo' },
-  { id: 'qualidade', label: 'Qualidade & Insights' },
+  { id: 'qualidade',   label: 'Qualidade & Insights' },
   { id: 'lancamentos', label: 'Lançamentos' },
-  { id: 'metas', label: 'Metas' },
+  { id: 'metas',       label: 'Metas' },
+  { id: 'acesso',      label: '🔐 Acesso', adminOnly: true },
 ]
 
-export function TabNav({ active, onChange }: TabNavProps) {
+export function TabNav({ active, onChange, isAdmin }: TabNavProps) {
+  const visible = TABS.filter(t => !t.adminOnly || isAdmin)
+
   return (
     <div
       style={{
@@ -26,7 +30,7 @@ export function TabNav({ active, onChange }: TabNavProps) {
       }}
       className="px-6 flex overflow-x-auto gap-0"
     >
-      {TABS.map(t => (
+      {visible.map(t => (
         <button
           key={t.id}
           onClick={() => onChange(t.id)}
