@@ -68,11 +68,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return await isAllowed(user.email)
     },
 
-    // Persiste isAdmin no token JWT (gerado uma vez no sign-in)
+    // Reavalia isAdmin a cada refresh do JWT — funciona mesmo para sessões já existentes
     async jwt({ token, user }) {
-      if (user) {
-        token.isAdmin = user.email?.toLowerCase() === ADMIN_EMAIL
-      }
+      const email = ((user?.email || token.email) ?? '').toLowerCase()
+      token.isAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL
       return token
     },
 
