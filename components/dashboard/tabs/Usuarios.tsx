@@ -5,7 +5,11 @@ import useSWR from 'swr'
 import { UserPlus, ToggleLeft, ToggleRight, Trash2, Shield, Users, UserCheck, UserX } from 'lucide-react'
 import type { Usuario } from '@/app/api/usuarios/route'
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+const fetcher = async (url: string) => {
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
 
 function fCPF(v: string) {
   const n = v.replace(/\D/g, '').slice(0, 11)
@@ -222,8 +226,19 @@ export function UsuariosTab() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={7} style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--red)', fontSize: 12 }}>
-                    Erro ao carregar usuários. Verifique as configurações do Service Account.
+                  <td colSpan={7} style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12 }}>
+                    <div style={{ color: 'var(--red)', fontWeight: 600, marginBottom: 6 }}>
+                      Service Account não configurado
+                    </div>
+                    <div style={{ color: 'var(--ink3)', lineHeight: 1.6 }}>
+                      Para gerenciar usuários pela planilha, configure as variáveis de ambiente na Vercel:<br />
+                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>GOOGLE_SA_EMAIL</code>{' '}
+                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>GOOGLE_SA_KEY</code>{' '}
+                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>SHEETS_ID</code>
+                    </div>
+                    <div style={{ color: 'var(--ink3)', marginTop: 8, fontSize: 11 }}>
+                      Enquanto isso, use <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>ALLOWED_EMAILS</code> na Vercel para controlar o acesso.
+                    </div>
                   </td>
                 </tr>
               )}
