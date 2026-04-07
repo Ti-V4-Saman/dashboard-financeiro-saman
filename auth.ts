@@ -7,13 +7,17 @@ const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '')
   .map(e => e.trim().toLowerCase())
   .filter(Boolean)
 
-// Domínio autorizado (opcional — se definido, qualquer e-mail do domínio entra)
-const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || '').trim().toLowerCase()
+// Domínios autorizados — múltiplos separados por vírgula
+// Funciona tanto com Google Workspace quanto com Gmail comum
+const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAIN || '')
+  .split(',')
+  .map(d => d.trim().toLowerCase())
+  .filter(Boolean)
 
 function isAllowed(email: string | null | undefined): boolean {
   if (!email) return false
   const e = email.toLowerCase()
-  if (ALLOWED_DOMAIN && e.endsWith('@' + ALLOWED_DOMAIN)) return true
+  if (ALLOWED_DOMAINS.some(d => e.endsWith('@' + d))) return true
   if (ALLOWED_EMAILS.length > 0 && ALLOWED_EMAILS.includes(e)) return true
   return false
 }
