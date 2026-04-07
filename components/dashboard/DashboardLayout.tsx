@@ -10,6 +10,7 @@ import { CentrosCusto } from './tabs/CentrosCusto'
 import { Comparativo } from './tabs/Comparativo'
 import { Qualidade } from './tabs/Qualidade'
 import { Lancamentos } from './tabs/Lancamentos'
+import { MetasTab } from './tabs/Metas'
 import type { Lancamento, Filters } from '@/lib/types'
 
 interface DashboardLayoutProps {
@@ -37,7 +38,7 @@ export function DashboardLayout({
       <FilterBar filters={filters} setFilters={setFilters} allData={allData} />
       <TabNav active={activeTab} onChange={setActiveTab} />
 
-      <main className="px-6 py-5 max-w-[1600px]">
+      <main className="px-6 py-5 w-full">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <div
@@ -71,6 +72,7 @@ export function DashboardLayout({
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} />}
             {activeTab === 'qualidade' && <Qualidade data={filteredData} />}
             {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
+            {activeTab === 'metas' && <MetasTab allData={allData} filters={filters} />}
           </div>
         )}
       </main>

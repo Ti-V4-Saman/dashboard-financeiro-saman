@@ -1,6 +1,6 @@
 'use client'
 
-type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos'
+type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas'
 
 interface TabNavProps {
   active: Tab
@@ -14,6 +14,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'comparativo', label: 'Comparativo' },
   { id: 'qualidade', label: 'Qualidade & Insights' },
   { id: 'lancamentos', label: 'Lançamentos' },
+  { id: 'metas', label: 'Metas' },
 ]
 
 export function TabNav({ active, onChange }: TabNavProps) {

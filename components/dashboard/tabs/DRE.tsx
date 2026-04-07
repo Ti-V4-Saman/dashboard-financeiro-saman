@@ -1,351 +1,388 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Legend,
-} from 'recharts'
 import type { Lancamento } from '@/lib/types'
-import { fR, gM, mLbl, getMonths } from '@/lib/utils'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Search } from 'lucide-react'
+import { fR, getMonths, mLbl } from '@/lib/utils'
 
-interface Props {
-  data: Lancamento[]
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type RowKind = 'l1' | 'l2' | 'l3' | 'subtotal' | 'ebitda' | 'resultado'
+
+interface DRERow {
+  id: string
+  kind: RowKind
+  label: string
+  l1Key?: string
+  l2Key?: string
+  vals: number[] // one value per col (months + '__acc__' last)
 }
 
-const DRE_ORDER = [
-  '1 — Rec. Operacionais',
-  '6.1 — Rec. Financeira',
-  '2 — Deduções',
-  '3 — Custos Operac.',
-  '4 — Despesas',
-  '5 — Depreciações',
-  '6.2 — Desp. Financeira',
-  '7 — Impostos s/ Lucro',
-  'Outros',
-]
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const COLORS = ['#1B55A3', '#14703F', '#D41F1F', '#8B5B0D', '#384858', '#888480', '#B52C2C', '#45433D']
+function numPrefix(s: string): number {
+  const m = s.match(/^([\d.]+)/)
+  return m ? parseFloat(m[1]) : 999
+}
 
-export function DRE({ data }: Props) {
-  const [search, setSearch] = useState('')
-  const [drillCat, setDrillCat] = useState<string | null>(null)
+function fPctStr(val: number, recBruta: number): string {
+  if (!recBruta) return '—'
+  return ((val / recBruta) * 100).toFixed(1).replace('.', ',') + '%'
+}
 
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+// ─── Visual config ─────────────────────────────────────────────────────────────
 
-  const dreGroups = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      const g = gM(r.cat1)
-      const sign = r.tipo === 'Receita' ? 1 : -1
-      map.set(g, (map.get(g) || 0) + sign * r.valor)
-    }
-    return DRE_ORDER.filter(g => map.has(g)).map(g => ({
-      grupo: g,
-      valor: map.get(g)!,
-    }))
-  }, [op])
+const ROW_STYLE: Record<RowKind, { bg: string; fg: string; fw: number; fs: number; py: number }> = {
+  l1:        { bg: 'var(--surf2)',   fg: 'var(--ink)',  fw: 700, fs: 12, py: 10 },
+  l2:        { bg: 'var(--surface)', fg: 'var(--ink2)', fw: 600, fs: 11, py: 9  },
+  l3:        { bg: 'var(--surface)', fg: 'var(--ink)',  fw: 400, fs: 11, py: 8  },
+  subtotal:  { bg: 'var(--surf2)',   fg: 'var(--ink)',  fw: 700, fs: 12, py: 10 },
+  ebitda:    { bg: '#fef9ec',        fg: '#92400e',     fw: 700, fs: 12, py: 11 },
+  resultado: { bg: '#f0fdf4',        fg: '#166534',     fw: 700, fs: 12, py: 11 },
+}
 
-  // Subtotals
-  const recTotal = dreGroups
-    .filter(g => g.grupo.startsWith('1') || g.grupo.startsWith('6.1'))
-    .reduce((s, g) => s + g.valor, 0)
+const INDENT: Record<RowKind, number> = {
+  l1: 12, l2: 28, l3: 44, subtotal: 12, ebitda: 12, resultado: 12,
+}
 
-  const deducoes = dreGroups
-    .filter(g => g.grupo.startsWith('2'))
-    .reduce((s, g) => s + g.valor, 0)
+function valColor(val: number, kind: RowKind): string {
+  if (kind === 'ebitda' || kind === 'resultado')
+    return val >= 0 ? '#166534' : '#991b1b'
+  return val >= 0 ? 'var(--green)' : 'var(--red)'
+}
 
-  const recLiq = recTotal + deducoes
+function accumBg(kind: RowKind): string {
+  if (kind === 'ebitda')    return '#fef3c7'
+  if (kind === 'resultado') return '#dcfce7'
+  return 'rgba(22, 101, 52, 0.04)'
+}
 
-  const custos = dreGroups
-    .filter(g => g.grupo.startsWith('3') || g.grupo.startsWith('4') || g.grupo.startsWith('5'))
-    .reduce((s, g) => s + g.valor, 0)
+function accumFg(kind: RowKind): string {
+  if (kind === 'ebitda')    return '#92400e'
+  if (kind === 'resultado') return '#166534'
+  return '' // fall back to valColor
+}
 
-  const ebitda = recLiq + custos
+// ─── Component ────────────────────────────────────────────────────────────────
 
-  const desFin = dreGroups
-    .filter(g => g.grupo.startsWith('6.2'))
-    .reduce((s, g) => s + g.valor, 0)
-
-  const imp = dreGroups
-    .filter(g => g.grupo.startsWith('7'))
-    .reduce((s, g) => s + g.valor, 0)
-
-  const lucroLiq = ebitda + desFin + imp
-
-  // Subcategories
-  const subCats = useMemo(() => {
-    const map = new Map<string, { grupo: string; valor: number; tipo: string }>()
-    for (const r of op) {
-      const cat = r.cat1 || 'Sem categoria'
-      if (!map.has(cat)) {
-        map.set(cat, { grupo: gM(cat), valor: 0, tipo: r.tipo })
-      }
-      const entry = map.get(cat)!
-      entry.valor += r.tipo === 'Receita' ? r.valor : -r.valor
-    }
-    return Array.from(map.entries())
-      .map(([nome, d]) => ({ nome, ...d }))
-      .sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor))
-  }, [op])
-
-  const filteredSubs = useMemo(() => {
-    if (!search) return subCats
-    const q = search.toLowerCase()
-    return subCats.filter(
-      s => s.nome.toLowerCase().includes(q) || s.grupo.toLowerCase().includes(q)
-    )
-  }, [subCats, search])
-
-  // Drill-down data
-  const drillData = useMemo(() => {
-    if (!drillCat) return []
-    const rows = op.filter(r => r.cat1 === drillCat)
-    const months = getMonths(rows)
-    return months.map(ym => {
-      const monthRows = rows.filter(r => {
-        if (!r.data) return false
-        const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-        return m === ym
-      })
-      const total = monthRows.reduce(
-        (s, r) => s + (r.tipo === 'Receita' ? r.valor : -r.valor),
-        0
-      )
-      return { mes: mLbl(ym), total }
-    })
-  }, [drillCat, op])
-
-  const drillRows = useMemo(() => {
-    if (!drillCat) return []
-    return op
-      .filter(r => r.cat1 === drillCat)
-      .sort((a, b) => (b.data?.getTime() || 0) - (a.data?.getTime() || 0))
-  }, [drillCat, op])
-
-  // Donut for costs
-  const costDonut = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Despesa') continue
-      const g = gM(r.cat1)
-      map.set(g, (map.get(g) || 0) + r.valor)
-    }
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-  }, [op])
-
-  const recBruta = op.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-
-  const renderRow = (label: string, valor: number, bold?: boolean, indent?: boolean) => (
-    <tr key={label} style={{ borderBottom: '1px solid var(--line)' }}>
-      <td
-        className={`py-2 ${indent ? 'pl-6' : 'pl-3'} text-[11px]`}
-        style={{ color: bold ? 'var(--ink)' : 'var(--ink2)', fontWeight: bold ? 600 : 400 }}
-      >
-        {label}
-      </td>
-      <td
-        className="py-2 pr-3 text-right text-[11px] font-semibold"
-        style={{ color: valor >= 0 ? 'var(--green)' : 'var(--red)' }}
-      >
-        {fR(valor)}
-      </td>
-      <td
-        className="py-2 pr-3 text-right text-[11px]"
-        style={{ color: 'var(--ink3)' }}
-      >
-        {recBruta > 0 ? `${((Math.abs(valor) / recBruta) * 100).toFixed(1)}%` : '—'}
-      </td>
-    </tr>
+export function DRE({ data }: { data: Lancamento[] }) {
+  // Only settled, non-transfer transactions
+  const op = useMemo(
+    () => data.filter(r => !r.isTransfer && r.situacao === 'Quitado'),
+    [data],
   )
 
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3" style={{ gridTemplateColumns: '5fr 4fr' }}>
-        {/* DRE Table */}
-        <Card>
-          <CardHeader>
-            <CardTitle>DRE — Demonstrativo de Resultado</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <table className="w-full">
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                  <th className="py-1.5 pl-3 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Grupo</th>
-                  <th className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Valor</th>
-                  <th className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>% Rec.</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dreGroups.map(g => renderRow(g.grupo, g.valor, false, true))}
-                <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--surf2)' }}>
-                  <td className="py-2 pl-3 text-[11px] font-semibold" style={{ color: 'var(--ink)' }}>Receita Bruta Total</td>
-                  <td className="py-2 pr-3 text-right text-[11px] font-semibold" style={{ color: recTotal >= 0 ? 'var(--green)' : 'var(--red)' }}>{fR(recTotal)}</td>
-                  <td className="py-2 pr-3 text-right text-[11px]" style={{ color: 'var(--ink3)' }}>100%</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--surf2)' }}>
-                  <td className="py-2 pl-3 text-[11px] font-semibold" style={{ color: 'var(--ink)' }}>Receita Líquida</td>
-                  <td className="py-2 pr-3 text-right text-[11px] font-semibold" style={{ color: recLiq >= 0 ? 'var(--green)' : 'var(--red)' }}>{fR(recLiq)}</td>
-                  <td className="py-2 pr-3 text-right text-[11px]" style={{ color: 'var(--ink3)' }}>{recBruta > 0 ? `${((recLiq / recBruta) * 100).toFixed(1)}%` : '—'}</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--surf2)' }}>
-                  <td className="py-2 pl-3 text-[11px] font-bold" style={{ color: 'var(--ink)' }}>EBITDA</td>
-                  <td className="py-2 pr-3 text-right text-[11px] font-bold" style={{ color: ebitda >= 0 ? 'var(--green)' : 'var(--red)' }}>{fR(ebitda)}</td>
-                  <td className="py-2 pr-3 text-right text-[11px]" style={{ color: 'var(--ink3)' }}>{recBruta > 0 ? `${((ebitda / recBruta) * 100).toFixed(1)}%` : '—'}</td>
-                </tr>
-                <tr style={{ background: 'var(--surf2)' }}>
-                  <td className="py-2 pl-3 text-[11px] font-bold" style={{ color: 'var(--ink)' }}>Lucro Líquido</td>
-                  <td className="py-2 pr-3 text-right text-[11px] font-bold" style={{ color: lucroLiq >= 0 ? 'var(--green)' : 'var(--red)' }}>{fR(lucroLiq)}</td>
-                  <td className="py-2 pr-3 text-right text-[11px]" style={{ color: 'var(--ink3)' }}>{recBruta > 0 ? `${((lucroLiq / recBruta) * 100).toFixed(1)}%` : '—'}</td>
-                </tr>
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
+  const months = useMemo(() => getMonths(op), [op])
+  const cols = useMemo(() => [...months, '__acc__'], [months])
 
-        {/* Donut */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Distribuição de Custos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie
-                  data={costDonut}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={90}
-                  paddingAngle={2}
-                  dataKey="value"
-                >
-                  {costDonut.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(v: number) => fR(v)}
-                  contentStyle={{ border: '1px solid var(--line)', borderRadius: 6, background: 'var(--surface)', fontSize: 11 }}
-                />
-                <Legend layout="vertical" align="right" verticalAlign="middle" iconSize={8} wrapperStyle={{ fontSize: 10, color: 'var(--ink3)' }} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+  // Pre-compute: month → l1 → l2 → l3 → signed value
+  const vm = useMemo(() => {
+    const r: Record<string, Record<string, Record<string, Record<string, number>>>> = {}
+    for (const row of op) {
+      if (!row.data) continue
+      const ym = `${row.data.getFullYear()}-${String(row.data.getMonth() + 1).padStart(2, '0')}`
+      const sign = row.tipo === 'Receita' ? 1 : -1
+      const l1 = row.catSup1 || 'Outros'
+      const l2 = row.catSup || l1
+      const l3 = row.cat1 || l2
+      if (!r[ym]) r[ym] = {}
+      if (!r[ym][l1]) r[ym][l1] = {}
+      if (!r[ym][l1][l2]) r[ym][l1][l2] = {}
+      if (!r[ym][l1][l2][l3]) r[ym][l1][l2][l3] = 0
+      r[ym][l1][l2][l3] += sign * row.valor
+    }
+    return r
+  }, [op])
+
+  // Build sorted hierarchy from data
+  const hier = useMemo(() => {
+    const l1m = new Map<string, Map<string, Set<string>>>()
+    for (const row of op) {
+      const l1 = row.catSup1 || 'Outros'
+      const l2 = row.catSup || l1
+      const l3 = row.cat1 || l2
+      if (!l1m.has(l1)) l1m.set(l1, new Map())
+      if (!l1m.get(l1)!.has(l2)) l1m.get(l1)!.set(l2, new Set())
+      l1m.get(l1)!.get(l2)!.add(l3)
+    }
+    return [...l1m.entries()]
+      .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
+      .map(([l1, l2m]) => ({
+        l1,
+        children: [...l2m.entries()]
+          .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
+          .map(([l2, l3s]) => ({
+            l2,
+            children: [...l3s].sort((a, b) => numPrefix(a) - numPrefix(b)),
+          })),
+      }))
+  }, [op])
+
+  // Value getters
+  const getL3 = (col: string, l1: string, l2: string, l3: string): number => {
+    if (col === '__acc__') return months.reduce((s, m) => s + (vm[m]?.[l1]?.[l2]?.[l3] ?? 0), 0)
+    return vm[col]?.[l1]?.[l2]?.[l3] ?? 0
+  }
+
+  const getL2 = (col: string, l1: string, l2: string): number => {
+    if (col === '__acc__') return months.reduce((s, m) => s + getL2(m, l1, l2), 0)
+    return Object.values(vm[col]?.[l1]?.[l2] ?? {}).reduce((s, v) => s + v, 0)
+  }
+
+  const getL1 = (col: string, l1: string): number => {
+    if (col === '__acc__') return months.reduce((s, m) => s + getL1(m, l1), 0)
+    let s = 0
+    for (const l2v of Object.values(vm[col]?.[l1] ?? {}))
+      for (const v of Object.values(l2v)) s += v
+    return s
+  }
+
+  const groupSum = (col: string, maxPfx: number): number =>
+    hier.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + getL1(col, h.l1), 0)
+
+  const makeVals = (fn: (col: string) => number) => cols.map(fn)
+
+  // Collapse state (default: all expanded = nothing in the sets)
+  const [c1, setC1] = useState<Set<string>>(new Set())
+  const [c2, setC2] = useState<Set<string>>(new Set())
+
+  const toggleL1 = (l1: string) =>
+    setC1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
+  const toggleL2 = (l2: string) =>
+    setC2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
+
+  // Build flat rows list + pre-compute subtotals
+  const { dreRows, recBrutaVals } = useMemo(() => {
+    const recBrutaVals = makeVals(col => groupSum(col, 1.99))
+    const fatLiqVals   = makeVals(col => groupSum(col, 2.99))
+    const lucroBrutoVals = makeVals(col => groupSum(col, 3.99))
+    const ebitdaVals   = makeVals(col => groupSum(col, 4.99))
+    const resLiqVals   = makeVals(col => groupSum(col, 99))
+
+    const dreRows: DRERow[] = []
+
+    for (let i = 0; i < hier.length; i++) {
+      const { l1, children: l2s } = hier[i]
+      const prefix = numPrefix(l1)
+
+      // L1 row
+      dreRows.push({
+        id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1,
+        vals: makeVals(col => getL1(col, l1)),
+      })
+
+      if (!c1.has(l1)) {
+        for (const { l2, children: l3s } of l2s) {
+          // L2 row
+          dreRows.push({
+            id: `l2::${l2}`, kind: 'l2', label: l2, l1Key: l1, l2Key: l2,
+            vals: makeVals(col => getL2(col, l1, l2)),
+          })
+
+          if (!c2.has(l2)) {
+            for (const l3 of l3s) {
+              dreRows.push({
+                id: `l3::${l1}::${l2}::${l3}`, kind: 'l3', label: l3,
+                l1Key: l1, l2Key: l2,
+                vals: makeVals(col => getL3(col, l1, l2, l3)),
+              })
+            }
+          }
+        }
+      }
+
+      // Insert subtotals at group transitions
+      const nextPfx = i + 1 < hier.length ? numPrefix(hier[i + 1].l1) : Infinity
+      if (prefix <= 2 && nextPfx > 2)
+        dreRows.push({ id: '__fatLiq__',    kind: 'subtotal',  label: '(=) Faturamento Líquido', vals: fatLiqVals })
+      if (prefix <= 3 && nextPfx > 3)
+        dreRows.push({ id: '__lucroBruto__', kind: 'subtotal',  label: '(=) Lucro Bruto',         vals: lucroBrutoVals })
+      if (prefix <= 4 && nextPfx > 4)
+        dreRows.push({ id: '__ebitda__',    kind: 'ebitda',    label: '(=) EBITDA',               vals: ebitdaVals })
+      if (i === hier.length - 1)
+        dreRows.push({ id: '__resLiq__',    kind: 'resultado', label: '(=) Resultado Líquido',    vals: resLiqVals })
+    }
+
+    return { dreRows, recBrutaVals }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hier, c1, c2, months, vm])
+
+  // ─── Render ──────────────────────────────────────────────────────────────────
+
+  if (op.length === 0) {
+    return (
+      <div style={{ textAlign: 'center', padding: 48, color: 'var(--ink3)', fontSize: 12 }}>
+        Nenhum lançamento quitado no período selecionado.
       </div>
+    )
+  }
 
-      {/* Subcategories table */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Subcategorias</CardTitle>
-            <div className="relative w-48">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3" style={{ color: 'var(--ink3)' }} />
-              <Input
-                placeholder="Buscar..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="pl-6"
-              />
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <table className="w-full">
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                <th className="py-1.5 pl-3 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Categoria</th>
-                <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Grupo DRE</th>
-                <th className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Valor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredSubs.slice(0, 50).map(s => (
+  return (
+    <div
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ overflowX: 'auto' }}>
+        <table
+          style={{
+            borderCollapse: 'collapse',
+            fontSize: 11,
+            minWidth: Math.max(800, 300 + months.length * 180),
+            width: '100%',
+          }}
+        >
+          {/* ── Header ─────────────────────────────────────────────────────── */}
+          <thead>
+            {/* Row 1: group names */}
+            <tr style={{ background: 'var(--surf2)' }}>
+              <th
+                rowSpan={2}
+                style={{
+                  position: 'sticky', left: 0, zIndex: 3,
+                  background: 'var(--surf2)',
+                  padding: '10px 16px',
+                  textAlign: 'left',
+                  fontSize: 11, fontWeight: 600, color: 'var(--ink3)',
+                  minWidth: 280, whiteSpace: 'nowrap',
+                  borderRight: '2px solid var(--line)',
+                  borderBottom: '1px solid var(--line)',
+                }}
+              >
+                Descrição
+              </th>
+              {cols.map((col, ci) => {
+                const isAcc = ci === cols.length - 1
+                return (
+                  <th
+                    key={col}
+                    colSpan={2}
+                    style={{
+                      padding: '8px 10px',
+                      textAlign: 'center',
+                      fontSize: 11, fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                      borderLeft: '1px solid var(--line)',
+                      borderBottom: '1px solid var(--line)',
+                      background: isAcc ? '#dcfce7' : 'var(--surf2)',
+                      color: isAcc ? '#166534' : 'var(--ink)',
+                    }}
+                  >
+                    {isAcc ? 'Acumulado' : mLbl(col)}
+                  </th>
+                )
+              })}
+            </tr>
+            {/* Row 2: R$ / % */}
+            <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
+              {cols.flatMap((col, ci) => {
+                const isAcc = ci === cols.length - 1
+                const bg    = isAcc ? '#bbf7d0' : 'var(--surf2)'
+                const fg    = isAcc ? '#166534' : 'var(--ink3)'
+                const base: React.CSSProperties = {
+                  padding: '5px 8px', fontSize: 10, fontWeight: 600,
+                  color: fg, background: bg, whiteSpace: 'nowrap',
+                }
+                return [
+                  <th key={`${col}-r`} style={{ ...base, textAlign: 'right', borderLeft: '1px solid var(--line)' }}>R$</th>,
+                  <th key={`${col}-p`} style={{ ...base, textAlign: 'right' }}>%</th>,
+                ]
+              })}
+            </tr>
+          </thead>
+
+          {/* ── Body ───────────────────────────────────────────────────────── */}
+          <tbody>
+            {dreRows.map(row => {
+              const s    = ROW_STYLE[row.kind]
+              const ind  = INDENT[row.kind]
+              const canT = row.kind === 'l1' || row.kind === 'l2'
+              const collapsed =
+                row.kind === 'l1' ? c1.has(row.l1Key!) :
+                row.kind === 'l2' ? c2.has(row.l2Key!) : false
+              const arrow = canT ? (collapsed ? '▸ ' : '▾ ') : ''
+
+              return (
                 <tr
-                  key={s.nome}
-                  style={{ borderBottom: '1px solid var(--line)', cursor: 'pointer' }}
-                  className="hover:bg-[var(--surf2)] transition-colors"
-                  onClick={() => setDrillCat(s.nome)}
+                  key={row.id}
+                  style={{
+                    background: s.bg,
+                    borderBottom: '1px solid var(--line)',
+                    borderTop: (row.kind === 'subtotal' || row.kind === 'ebitda' || row.kind === 'resultado') ? '2px solid var(--line2)' : undefined,
+                  }}
                 >
-                  <td className="py-2 pl-3 text-[11px]" style={{ color: 'var(--ink2)' }}>{s.nome}</td>
-                  <td className="py-2 text-[10px]" style={{ color: 'var(--ink3)' }}>{s.grupo}</td>
-                  <td className="py-2 pr-3 text-right text-[11px] font-semibold" style={{ color: s.valor >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {fR(s.valor)}
+                  {/* Sticky description cell */}
+                  <td
+                    onClick={() => {
+                      if (row.kind === 'l1') toggleL1(row.l1Key!)
+                      if (row.kind === 'l2') toggleL2(row.l2Key!)
+                    }}
+                    style={{
+                      position: 'sticky', left: 0, zIndex: 2,
+                      background: s.bg,
+                      color: s.fg,
+                      fontWeight: s.fw,
+                      fontSize: s.fs,
+                      padding: `${s.py}px 16px ${s.py}px ${ind}px`,
+                      cursor: canT ? 'pointer' : 'default',
+                      whiteSpace: 'nowrap',
+                      borderRight: '2px solid var(--line)',
+                      userSelect: 'none',
+                    }}
+                  >
+                    {arrow}{row.label}
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
 
-      {/* Drill-down Dialog */}
-      <Dialog open={!!drillCat} onOpenChange={open => !open && setDrillCat(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Drill-down: {drillCat}</DialogTitle>
-          </DialogHeader>
-          <div className="p-5 pt-3 space-y-4">
-            {drillData.length > 0 && (
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={drillData}>
-                  <XAxis dataKey="mes" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={v => `R$${Math.abs(v / 1000).toFixed(0)}K`} width={50} />
-                  <Tooltip formatter={(v: number) => fR(v)} contentStyle={{ border: '1px solid var(--line)', borderRadius: 6, background: 'var(--surface)', fontSize: 11 }} />
-                  <Bar dataKey="total" name="Valor" radius={[3, 3, 0, 0]}>
-                    {drillData.map((d, i) => (
-                      <Cell key={i} fill={d.total >= 0 ? 'var(--green)' : 'var(--red)'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-            <div className="max-h-64 overflow-y-auto">
-              <table className="w-full">
-                <thead className="sticky top-0" style={{ background: 'var(--surface)' }}>
-                  <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                    <th className="py-1.5 pl-2 text-left text-[10px] font-semibold uppercase" style={{ color: 'var(--ink3)' }}>Data</th>
-                    <th className="py-1.5 text-left text-[10px] font-semibold uppercase" style={{ color: 'var(--ink3)' }}>Descrição</th>
-                    <th className="py-1.5 pr-2 text-right text-[10px] font-semibold uppercase" style={{ color: 'var(--ink3)' }}>Valor</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {drillRows.slice(0, 100).map((r, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td className="py-1.5 pl-2 text-[11px]" style={{ color: 'var(--ink3)' }}>
-                        {r.data ? `${String(r.data.getDate()).padStart(2,'0')}/${String(r.data.getMonth()+1).padStart(2,'0')}/${r.data.getFullYear()}` : '—'}
-                      </td>
-                      <td className="py-1.5 text-[11px]" style={{ color: 'var(--ink2)' }}>{r.desc}</td>
-                      <td className="py-1.5 pr-2 text-right text-[11px] font-semibold" style={{ color: r.tipo === 'Receita' ? 'var(--green)' : 'var(--red)' }}>
-                        {r.tipo === 'Receita' ? fR(r.valor) : `(${fR(r.valor)})`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+                  {/* Value cells */}
+                  {cols.flatMap((col, ci) => {
+                    const isAcc = ci === cols.length - 1
+                    const val   = row.vals[ci]
+                    const bg    = isAcc && accumBg(row.kind) ? accumBg(row.kind) : s.bg
+                    const fg    = isAcc && accumFg(row.kind) ? accumFg(row.kind) : valColor(val, row.kind)
+                    const pctFg = row.kind === 'ebitda' || row.kind === 'resultado'
+                      ? 'rgba(0,0,0,0.45)'
+                      : 'var(--ink3)'
+
+                    return [
+                      <td
+                        key={`${row.id}-${col}-r`}
+                        style={{
+                          padding: `${s.py}px 8px`,
+                          textAlign: 'right',
+                          fontWeight: row.kind === 'l3' ? 400 : s.fw,
+                          fontSize: s.fs,
+                          color: fg,
+                          background: bg,
+                          borderLeft: '1px solid var(--line)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {fR(val)}
+                      </td>,
+                      <td
+                        key={`${row.id}-${col}-p`}
+                        style={{
+                          padding: `${s.py}px 8px`,
+                          textAlign: 'right',
+                          fontWeight: 400,
+                          fontSize: 10,
+                          color: pctFg,
+                          background: bg,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {fPctStr(val, recBrutaVals[ci])}
+                      </td>,
+                    ]
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
