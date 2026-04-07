@@ -3,7 +3,7 @@ import type { Meta } from '@/lib/types'
 
 const METAS_URL = process.env.METAS_URL!
 
-export const revalidate = 300
+export const dynamic = 'force-dynamic'
 
 function parseMetas(text: string): Meta[] {
   const lines = text.split('\n').filter(l => l.trim().length > 0)
