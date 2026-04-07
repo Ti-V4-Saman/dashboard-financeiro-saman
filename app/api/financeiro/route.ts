@@ -9,8 +9,8 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    // Apenas o CSV bruto do Google Sheets é cacheado (5 min) — não o JSON parseado
-    const res = await fetch(SHEETS_URL, { next: { revalidate: 300 } })
+    // cache: 'no-store' garante paridade com local — sem risco de CSV antigo em cache
+    const res = await fetch(SHEETS_URL, { cache: 'no-store' })
     if (!res.ok) {
       return NextResponse.json(
         { error: 'Failed to fetch spreadsheet' },
@@ -19,6 +19,25 @@ export async function GET() {
     }
     const text = await res.text()
     const rows = parseCSV(text)
+
+    // DEBUG TEMPORÁRIO — remove após confirmar paridade
+    const quitados   = rows.filter(r => r.situacao === 'Quitado').length
+    const comData    = rows.filter(r => r.data !== null).length
+    const mar26      = rows.filter(r => {
+      if (!r.data) return false
+      return r.data.getFullYear() === 2026 && r.data.getMonth() === 2
+    }).length
+    console.log('[financeiro] debug', {
+      url: SHEETS_URL?.slice(-30),
+      totalRows: rows.length,
+      quitados,
+      comData,
+      mar26,
+      primeiroData: rows[1]?.data?.toISOString(),
+      primeiroValorDRE: rows[1]?.valorDRE,
+      primeiroSituacao: rows[1]?.situacao,
+    })
+
     return NextResponse.json(rows, {
       headers: { 'Cache-Control': 'no-store' },
     })

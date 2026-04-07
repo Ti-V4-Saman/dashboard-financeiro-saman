@@ -85,14 +85,21 @@ function parseMetas(text: string): Meta[] {
 
 export async function GET() {
   try {
-    const res = await fetch(METAS_URL, { next: { revalidate: 300 } })
+    const res = await fetch(METAS_URL, { cache: 'no-store' })
     if (!res.ok) {
       return NextResponse.json({ error: 'Failed to fetch metas' }, { status: 502 })
     }
     const text = await res.text()
     const metas = parseMetas(text)
+
+    // DEBUG TEMPORÁRIO — remove após confirmar paridade
+    console.log('[metas] debug', {
+      url: METAS_URL?.slice(-30),
+      totalMetas: metas.length,
+    })
+
     return NextResponse.json(metas, {
-      headers: { 'Cache-Control': 's-maxage=300, stale-while-revalidate=60' },
+      headers: { 'Cache-Control': 'no-store' },
     })
   } catch (err) {
     console.error('API /metas error:', err)
