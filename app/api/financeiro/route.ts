@@ -21,22 +21,12 @@ export async function GET() {
     const rows = parseCSV(text)
 
     // DEBUG TEMPORÁRIO — remove após confirmar paridade
-    const quitados   = rows.filter(r => r.situacao === 'Quitado').length
-    const comData    = rows.filter(r => r.data !== null).length
-    const mar26      = rows.filter(r => {
-      if (!r.data) return false
-      return r.data.getFullYear() === 2026 && r.data.getMonth() === 2
-    }).length
-    console.log('[financeiro] debug', {
-      url: SHEETS_URL?.slice(-30),
-      totalRows: rows.length,
-      quitados,
-      comData,
-      mar26,
-      primeiroData: rows[1]?.data?.toISOString(),
-      primeiroValorDRE: rows[1]?.valorDRE,
-      primeiroSituacao: rows[1]?.situacao,
-    })
+    const quitados = rows.filter(r => r.situacao === 'Quitado').length
+    const comData  = rows.filter(r => r.data !== null).length
+    const apr26    = rows.filter(r => r.data && r.data.getFullYear() === 2026 && r.data.getMonth() === 3).length
+    const apr26rec = rows.filter(r => r.data && r.data.getFullYear() === 2026 && r.data.getMonth() === 3 && !r.isTransfer && r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+    const apr26desp = rows.filter(r => r.data && r.data.getFullYear() === 2026 && r.data.getMonth() === 3 && !r.isTransfer && r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+    console.log('[fin] ' + JSON.stringify({ total: rows.length, quitados, comData, apr26, apr26rec: apr26rec.toFixed(2), apr26desp: apr26desp.toFixed(2), url: SHEETS_URL?.slice(-15) }))
 
     return NextResponse.json(rows, {
       headers: { 'Cache-Control': 'no-store' },
