@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Next.js build
+.next/
+out/
+
+# Environment — NUNCA commitar
+.env.local
+.env*.local
+
+# Vercel
+.vercel
+
+# OS
+.DS_Store
+*.pem
+
+# Debug
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts

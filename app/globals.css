@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+
+    /* Brand tokens */
+    --page: #F2F0EC;
+    --surface: #FFF;
+    --surf2: #F8F7F4;
+    --surf3: #EEECE7;
+    --line: #E2DFD8;
+    --line2: #CCC9C1;
+    --ink: #181714;
+    --ink2: #45433D;
+    --ink3: #888480;
+    --ink4: #B5B2AA;
+    --brand: #D41F1F;
+    --blue: #1B55A3;
+    --blue-l: #EAF1FB;
+    --green: #14703F;
+    --green-l: #E5F4ED;
+    --red: #B52C2C;
+    --red-l: #FAE8E8;
+    --amber: #8B5B0D;
+    --amber-l: #FBF0DF;
+    --amber-m: #F3C46A;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 13px;
+}
+
+body {
+  background: var(--page);
+  font-family: 'Inter', sans-serif;
+  color: var(--ink);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surf2);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink4);
+}
+
+/* Pulse animation */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(20, 112, 63, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(20, 112, 63, 0); }
+}
+
+.pulse-dot {
+  animation: pulse-green 2.5s ease infinite;
+}
+
+/* Fade-in animation */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.18s ease;
+}
+
+/* Spin animation */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-fast {
+  animation: spin 0.7s linear infinite;
+}
