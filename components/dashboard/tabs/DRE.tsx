@@ -88,7 +88,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
       if (!r[ym][l1]) r[ym][l1] = {}
       if (!r[ym][l1][l2]) r[ym][l1][l2] = {}
       if (!r[ym][l1][l2][l3]) r[ym][l1][l2][l3] = 0
-      r[ym][l1][l2][l3] += sign * row.valor
+      r[ym][l1][l2][l3] += sign * row.valorDRE
     }
     return r
   }, [op])
