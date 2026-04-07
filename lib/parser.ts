@@ -33,9 +33,6 @@ function parseRow(headers: string[], cols: string[]): Lancamento | null {
     return (cols[idx] || '').trim()
   }
 
-  const dataRaw = get('Data da baixa ou previsão')
-  const data = pD(dataRaw)
-
   const fornecedor = get('Nome do cliente ou fornecedor')
   const desc = get('Descrição do lançamento') || fornecedor
 
@@ -52,7 +49,18 @@ function parseRow(headers: string[], cols: string[]): Lancamento | null {
   const valorRaw = get('Valor')
   const valor = Math.abs(pN(valorRaw))
 
+  const valorDRERaw = get('Valor baixado/previsto') || get('Valor baixado / previsto')
+  const valorDRE = Math.abs(pN(valorDRERaw)) || valor  // fallback para valor se coluna ausente
+
   const situacao = get('Situação')
+
+  // Lançamentos quitados usam "Data da baixa" (col Q);
+  // os demais (pendente, em atraso, etc.) usam "Data de vencimento" (col A).
+  const isQuitado = situacao === 'Quitado'
+  const dataRaw = isQuitado
+    ? (get('Data da baixa') || get('Data da baixa ou previsão'))
+    : (get('Data de vencimento') || get('Data da baixa ou previsão'))
+  const data = pD(dataRaw)
 
   // Categories
   const cat1 = get('Categoria')
@@ -76,6 +84,7 @@ function parseRow(headers: string[], cols: string[]): Lancamento | null {
       conta,
       forma,
       valor,
+      valorDRE,
       situacao,
       isTransfer: true,
       cat1,
@@ -96,6 +105,7 @@ function parseRow(headers: string[], cols: string[]): Lancamento | null {
     conta,
     forma,
     valor,
+    valorDRE,
     situacao,
     isTransfer: false,
     cat1,

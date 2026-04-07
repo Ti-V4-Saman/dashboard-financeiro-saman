@@ -6,7 +6,8 @@ export interface Lancamento {
   origem: string
   conta: string
   forma: string
-  valor: number        // sempre positivo (Math.abs)
+  valor: number        // sempre positivo (Math.abs) — col "Valor"
+  valorDRE: number     // sempre positivo (Math.abs) — col "Valor baixado/previsto" (AY), usado na DRE
   situacao: string
   isTransfer: boolean
   cat1: string

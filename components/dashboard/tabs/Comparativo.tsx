@@ -27,10 +27,11 @@ interface Props {
 }
 
 export function Comparativo({ data, allData }: Props) {
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+  const op    = useMemo(() => data.filter(r => !r.isTransfer), [data])
   const allOp = useMemo(() => allData.filter(r => !r.isTransfer), [allData])
 
-  const months = useMemo(() => getMonths(allOp), [allOp])
+  // months derived from filtered data → chart and tables respect the selected period
+  const months = useMemo(() => getMonths(op), [op])
 
   const [mes1, setMes1] = useState(months[months.length - 2] || months[0] || '')
   const [mes2, setMes2] = useState(months[months.length - 1] || months[0] || '')
@@ -43,8 +44,8 @@ export function Comparativo({ data, allData }: Props) {
         const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
         return m === ym
       })
-      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
+      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
       return {
         mes: mLbl(ym),
         receita: rec,
@@ -62,22 +63,10 @@ export function Comparativo({ data, allData }: Props) {
         const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
         return m === ym
       })
-      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+      const rec  = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
+      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
 
-      const prevRows = i > 0 ? months.slice(0, i).flatMap(prevYm =>
-        op.filter(r => {
-          if (!r.data) return false
-          const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-          return m === prevYm
-        })
-      ).filter((_, idx) => {
-        if (i === 0) return false
-        const prevYm = months[i - 1]
-        return true // we'll recalculate below
-      }) : []
-
-      // Recalculate prev month properly
+      // Previous month
       let prevRec = 0, prevDesp = 0
       if (i > 0) {
         const prevYm = months[i - 1]
@@ -86,8 +75,8 @@ export function Comparativo({ data, allData }: Props) {
           const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
           return m === prevYm
         })
-        prevRec = prevMonthRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-        prevDesp = prevMonthRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+        prevRec  = prevMonthRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
+        prevDesp = prevMonthRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
       }
 
       const varRec = prevRec > 0 ? ((rec - prevRec) / prevRec) * 100 : null
@@ -104,7 +93,7 @@ export function Comparativo({ data, allData }: Props) {
   // Mes1 vs Mes2 by category
   const catComparison = useMemo(() => {
     const getForMonth = (ym: string) => {
-      const rows = allOp.filter(r => {
+      const rows = op.filter(r => {
         if (!r.data) return false
         const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
         return m === ym
@@ -112,7 +101,7 @@ export function Comparativo({ data, allData }: Props) {
       const catMap = new Map<string, number>()
       for (const r of rows) {
         const key = r.cat1 || 'Sem categoria'
-        catMap.set(key, (catMap.get(key) || 0) + (r.tipo === 'Receita' ? r.valor : -r.valor))
+        catMap.set(key, (catMap.get(key) || 0) + (r.tipo === 'Receita' ? r.valorDRE : -r.valorDRE))
       }
       return catMap
     }
@@ -128,7 +117,7 @@ export function Comparativo({ data, allData }: Props) {
         v2: map2.get(cat) || 0,
       }))
       .sort((a, b) => Math.abs(b.v2) - Math.abs(a.v2))
-  }, [allOp, mes1, mes2])
+  }, [op, mes1, mes2])
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
