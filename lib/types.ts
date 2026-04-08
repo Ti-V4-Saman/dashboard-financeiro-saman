@@ -35,10 +35,11 @@ export interface Lancamento {
 export interface Filters {
   dateFrom: string
   dateTo: string
-  categoria: string
-  cc: string
-  tipo: string
-  situacao: string
+  categoria: string[]  // multi-select — lista de categorias selecionadas (vazia = todas)
+  cc: string[]         // multi-select — centros de custo selecionados   (vazia = todos)
+  tipo: string         // single: '' | 'Receita' | 'Despesa'
+  situacao: string[]   // multi-select — situações selecionadas          (vazia = todas)
+  conta: string[]      // multi-select — contas financeiras selecionadas (vazia = todas) — NOVO
 }
 
 export interface Meta {
