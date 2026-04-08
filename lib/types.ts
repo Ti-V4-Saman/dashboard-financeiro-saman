@@ -1,3 +1,17 @@
+/**
+ * REGRAS OFICIAIS — competência e valor
+ *
+ * data  → Quitado/Pago  : "Data da baixa"      (col Q)
+ *         Demais         : "Data de vencimento" (col A)
+ *         fallback        : "Data da baixa ou previsão"
+ *
+ * valor → campo padrão para TODOS os cards, gráficos e totais
+ *         col 44 "Valor" — valor face do lançamento
+ *         Sempre excluir isTransfer=true
+ *
+ * valorDRE → auxiliar, col 51 "Valor baixado/previsto"
+ *            NÃO usar para totais gerais (diverge ~R$6k em meses parciais)
+ */
 export interface Lancamento {
   data: Date | null
   desc: string
@@ -6,8 +20,8 @@ export interface Lancamento {
   origem: string
   conta: string
   forma: string
-  valor: number        // sempre positivo (Math.abs) — col "Valor"
-  valorDRE: number     // sempre positivo (Math.abs) — col "Valor baixado/previsto" (AY), usado na DRE
+  valor: number     // ← padrão para todos os totais — col 44 "Valor"
+  valorDRE: number  // auxiliar — col 51 "Valor baixado/previsto"
   situacao: string
   isTransfer: boolean
   cat1: string

@@ -69,8 +69,8 @@ export function Comparativo({ data, allData }: Props) {
         const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
         return m === ym
       })
-      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
+      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
       return {
         mes: mLbl(ym),
         receita: rec,
@@ -88,8 +88,8 @@ export function Comparativo({ data, allData }: Props) {
         const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
         return m === ym
       })
-      const rec  = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
+      const rec  = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
 
       // Previous month
       let prevRec = 0, prevDesp = 0
@@ -100,8 +100,8 @@ export function Comparativo({ data, allData }: Props) {
           const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
           return m === prevYm
         })
-        prevRec  = prevMonthRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valorDRE, 0)
-        prevDesp = prevMonthRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valorDRE, 0)
+        prevRec  = prevMonthRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+        prevDesp = prevMonthRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
       }
 
       const varRec = prevRec > 0 ? ((rec - prevRec) / prevRec) * 100 : null
@@ -133,7 +133,7 @@ export function Comparativo({ data, allData }: Props) {
         const sign = r.tipo === 'Receita' ? 1 : -1
         if (!m.has(l1)) m.set(l1, new Map())
         if (!m.get(l1)!.has(l2)) m.get(l1)!.set(l2, new Map())
-        m.get(l1)!.get(l2)!.set(l3, (m.get(l1)!.get(l2)!.get(l3) || 0) + sign * r.valorDRE)
+        m.get(l1)!.get(l2)!.set(l3, (m.get(l1)!.get(l2)!.get(l3) || 0) + sign * r.valor)
       }
       return m
     }
