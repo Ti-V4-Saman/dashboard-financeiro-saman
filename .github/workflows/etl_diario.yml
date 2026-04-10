@@ -1,0 +1,56 @@
+name: ETL Diário — ContaAzul → PostgreSQL
+
+on:
+  schedule:
+    # 09:00 UTC = 06:00 Brasília (BRT = UTC-3)
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    # Permite execução manual pelo GitHub UI
+
+jobs:
+  etl:
+    name: Sincronização ContaAzul
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      # ── 2. Python 3.9 ────────────────────────────────────────────────────────
+      - name: Configurar Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      # ── 3. Cache de dependências pip ─────────────────────────────────────────
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ── 4. Instalar dependências ─────────────────────────────────────────────
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      # ── 5. Executar ETL ──────────────────────────────────────────────────────
+      - name: Executar ETL
+        env:
+          DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID:      ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET:  ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN:  ${{ secrets.CA_REFRESH_TOKEN }}
+        run: python -m etl.main
+
+      # ── 6. Upload do log como artefato (7 dias) ──────────────────────────────
+      - name: Upload log de execução
+        if: always()   # salvar log mesmo em caso de falha
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-log-${{ github.run_id }}-${{ github.run_number }}
+          path: etl_run.log
+          retention-days: 7
