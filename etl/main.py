@@ -2,15 +2,6 @@
 """
 etl/main.py
 Orquestrador do pipeline ETL ContaAzul → PostgreSQL.
-
-Ordem de execução:
-  1. Renova access_token via refresh_token
-  2. Cadastros: categorias → centros_custo → contas_financeiras → produtos
-  3. Pessoas:   clientes → fornecedores
-  4. Financeiro: contas_receber → contas_pagar → vendas
-  5. Imprime resumo final
-
-Rodas: python -m etl.main  (a partir da raiz do projeto)
 """
 
 import logging
@@ -18,13 +9,14 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Any, List
 
 # ── Carregar .env se existir (dev local) ──────────────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # python-dotenv opcional; em produção usar variáveis do CI
+    pass
 
 # ── Configuração de logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -32,8 +24,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.StreamHandler(open(1, 'w', encoding='utf-8', closefd=False)),  # stdout UTF-8
-        logging.FileHandler("etl_run.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
     ],
 )
 logger = logging.getLogger("etl.main")
@@ -80,8 +71,6 @@ def _run_safe(result: SyncResult, fn: Any, *args: Any) -> None:
 
 
 # ── Pipeline principal ────────────────────────────────────────────────────────
-from typing import Any, List
-
 
 def run(full_sync: bool = False) -> bool:
     """
@@ -114,7 +103,6 @@ def run(full_sync: bool = False) -> bool:
     results: List[SyncResult] = []
 
     syncs = [
-        # (nome_legível,           função,                  args_extras)
         ("categorias",            sync_categorias,         ()),
         ("centros_custo",         sync_centros_custo,      ()),
         ("contas_financeiras",    sync_contas_financeiras, ()),
@@ -126,32 +114,32 @@ def run(full_sync: bool = False) -> bool:
         ("vendas",                sync_vendas,             (mode,)),
     ]
 
-    def _get_conn() -> psycopg2.extensions.connection:
-        """Retorna conexao ativa, reconectando se necessario."""
+    def _get_active_conn(c):
+        """Verifica se a conexão ainda está ativa."""
         try:
-            conn.cursor().execute("SELECT 1")
-            return conn
+            with c.cursor() as cur:
+                cur.execute("SELECT 1")
+            return c
         except Exception:
-            logger.warning("Reconectando ao banco (conexao perdida)...")
+            logger.warning("Reconectando ao banco...")
             return get_connection()
 
+    current_conn = conn
     for name, fn, extra in syncs:
         r = SyncResult(name)
-        active_conn = _get_conn()
-        _run_safe(r, fn, active_conn, client, *extra)
+        current_conn = _get_active_conn(current_conn)
+        _run_safe(r, fn, current_conn, client, *extra)
         results.append(r)
 
     # ── 4. Fechar conexão ─────────────────────────────────────────────────────
     try:
-        conn.close()
+        current_conn.close()
     except Exception:
         pass
 
     # ── 5. Resumo final ───────────────────────────────────────────────────────
-    elapsed = time.monotonic()
     finished_at = datetime.now(timezone.utc)
     duration_s  = (finished_at - started_at).total_seconds()
-
     all_ok = all(r.ok for r in results)
 
     logger.info("")
@@ -175,11 +163,7 @@ def run(full_sync: bool = False) -> bool:
     return all_ok
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    # Suporte a flag --full ou variável de ambiente SYNC_MODE=full
     is_full = "--full" in sys.argv or os.getenv("SYNC_MODE") == "full"
-    
     ok = run(full_sync=is_full)
     sys.exit(0 if ok else 1)

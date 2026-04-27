@@ -76,9 +76,9 @@ const INDENT: Record<RowKind, number> = {
 }
 
 function StatusBadge({ ratio }: { ratio: number }) {
-  if (ratio >= 1) return <span style={{ background: 'var(--red-l)', color: 'var(--red)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>Estourado</span>
-  if (ratio >= 0.75) return <span style={{ background: 'var(--amber-l)', color: 'var(--amber)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>Atenção</span>
-  return <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>Ok</span>
+  if (ratio >= 1) return <span style={{ background: 'var(--red-l)', color: 'var(--red)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Estourado</span>
+  if (ratio >= 0.75) return <span style={{ background: 'var(--amber-l)', color: 'var(--amber)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Atenção</span>
+  return <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Ok</span>
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
