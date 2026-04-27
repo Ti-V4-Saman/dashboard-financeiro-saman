@@ -1,108 +1,78 @@
 import { NextResponse } from 'next/server'
-import type { Meta } from '@/lib/types'
+import { Pool } from 'pg'
 
-const METAS_URL = process.env.METAS_URL!
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+})
 
-export const dynamic = 'force-dynamic'
-
-function parseMetas(text: string): Meta[] {
-  const lines = text.split('\n').filter(l => l.trim().length > 0)
-  if (lines.length < 2) return []
-
-  // Detect separator
-  const sep = lines[0].includes(';') ? ';' : ','
-
-  function splitLine(line: string): string[] {
-    const result: string[] = []
-    let current = ''
-    let inQuotes = false
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i]
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') { current += '"'; i++ }
-        else inQuotes = !inQuotes
-      } else if (ch === sep && !inQuotes) {
-        result.push(current.trim())
-        current = ''
-      } else {
-        current += ch
-      }
-    }
-    result.push(current.trim())
-    return result
-  }
-
-  const headers = splitLine(lines[0]).map(h => h.replace(/^"|"$/g, '').trim().toUpperCase())
-
-  const get = (cols: string[], key: string) => {
-    const idx = headers.indexOf(key)
-    return idx >= 0 ? (cols[idx] || '').replace(/^"|"$/g, '').trim() : ''
-  }
-
-  const result: Meta[] = []
-
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitLine(lines[i]).map(c => c.replace(/^"|"$/g, '').trim())
-    if (cols.every(c => c === '')) continue
-
-    try {
-      const id = get(cols, 'ID')
-      const tipo = get(cols, 'TIPO') as Meta['tipo']
-      const mes = get(cols, 'MES_REFERENCIA')
-      const vpRaw = get(cols, 'VALOR_PLANEJADO').replace(',', '.')
-      const vp = parseFloat(vpRaw)
-
-      if (!id || !tipo || !mes || isNaN(vp)) continue
-
-      const cat = get(cols, 'CATEGORIA')
-      const n1  = get(cols, 'CATEGORIA_NIVEL_1')
-      const n2  = get(cols, 'CATEGORIA_NIVEL_2')
-      const n3  = get(cols, 'CATEGORIA_NIVEL_3')
-
-      result.push({
-        id,
-        tipo,
-        categoria: cat,
-        // If sheet has new hierarchy cols use them; fall back to old CATEGORIA
-        categoria_nivel_1: n1 || cat,
-        categoria_nivel_2: n2 || cat,
-        categoria_nivel_3: n3 || cat,
-        // sheet has typo "CENTO_DE_CUSTO"
-        centro_de_custo: get(cols, 'CENTRO_DE_CUSTO') || get(cols, 'CENTO_DE_CUSTO'),
-        mes_referencia: mes,
-        valor_planejado: vp,
-        tipo_lancamento: (get(cols, 'TIPO_LANCAMENTO') || 'Despesa') as Meta['tipo_lancamento'],
-        observacao: get(cols, 'OBSERVACAO'),
-        criado_em: get(cols, 'CRIADO_EM') || new Date().toISOString(),
-      })
-    } catch {
-      // skip malformed row
-    }
-  }
-
-  return result
-}
-
+// GET: Listar todas as metas
 export async function GET() {
   try {
-    const res = await fetch(METAS_URL, { cache: 'no-store' })
-    if (!res.ok) {
-      return NextResponse.json({ error: 'Failed to fetch metas' }, { status: 502 })
-    }
-    const text = await res.text()
-    const metas = parseMetas(text)
-
-    // DEBUG TEMPORÁRIO — remove após confirmar paridade
-    console.log('[metas] debug', {
-      url: METAS_URL?.slice(-30),
-      totalMetas: metas.length,
-    })
-
-    return NextResponse.json(metas, {
-      headers: { 'Cache-Control': 'no-store' },
-    })
+    const { rows } = await pool.query('SELECT * FROM ca.metas ORDER BY mes_referencia DESC, categoria ASC')
+    return NextResponse.json(rows)
   } catch (err) {
-    console.error('API /metas error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Error fetching metas:', err)
+    return NextResponse.json({ error: 'Failed to fetch metas' }, { status: 500 })
+  }
+}
+
+// POST: Criar ou atualizar uma meta (Upsert)
+export async function POST(req: Request) {
+  try {
+    const body = await req.json()
+    const { 
+      id, tipo, categoria, categoria_nivel_1, categoria_nivel_2, 
+      categoria_nivel_3, centro_de_custo, mes_referencia, 
+      valor_planejado, tipo_lancamento, observacao 
+    } = body
+
+    const query = `
+      INSERT INTO ca.metas (
+        id, tipo, categoria, categoria_nivel_1, categoria_nivel_2, 
+        categoria_nivel_3, centro_de_custo, mes_referencia, 
+        valor_planejado, tipo_lancamento, observacao
+      ) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (id) DO UPDATE SET
+        tipo = EXCLUDED.tipo,
+        categoria = EXCLUDED.categoria,
+        categoria_nivel_1 = EXCLUDED.categoria_nivel_1,
+        categoria_nivel_2 = EXCLUDED.categoria_nivel_2,
+        categoria_nivel_3 = EXCLUDED.categoria_nivel_3,
+        centro_de_custo = EXCLUDED.centro_de_custo,
+        mes_referencia = EXCLUDED.mes_referencia,
+        valor_planejado = EXCLUDED.valor_planejado,
+        tipo_lancamento = EXCLUDED.tipo_lancamento,
+        observacao = EXCLUDED.observacao
+      RETURNING *
+    `
+    const values = [
+      id, tipo, categoria, categoria_nivel_1, categoria_nivel_2, 
+      categoria_nivel_3, centro_de_custo, mes_referencia, 
+      valor_planejado, tipo_lancamento, observacao
+    ]
+
+    const { rows } = await pool.query(query, values)
+    return NextResponse.json(rows[0])
+  } catch (err) {
+    console.error('Error saving meta:', err)
+    return NextResponse.json({ error: 'Failed to save meta' }, { status: 500 })
+  }
+}
+
+// DELETE: Excluir uma meta
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url)
+    const id = searchParams.get('id')
+    
+    if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 })
+
+    await pool.query('DELETE FROM ca.metas WHERE id = $1', [id])
+    return NextResponse.json({ success: true })
+  } catch (err) {
+    console.error('Error deleting meta:', err)
+    return NextResponse.json({ error: 'Failed to delete meta' }, { status: 500 })
   }
 }

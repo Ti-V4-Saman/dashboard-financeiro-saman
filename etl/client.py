@@ -15,14 +15,16 @@ from typing import Any, Dict, Generator, List, Optional
 
 import requests
 
+# Usando o host bridge que aceita tokens do novo portal (prefixo 3010ck)
 API_BASE = "https://api-v2.contaazul.com/v1"
 
 logger = logging.getLogger(__name__)
 
 # Configurações de retry
-MAX_RETRIES   = 5
-BACKOFF_BASE  = 2.0   # segundos
-PAGE_SIZE     = 100   # registros por página
+MAX_RETRIES        = 10
+BACKOFF_BASE       = 5.0   # segundos
+PAGE_SIZE          = 100   # registros por página
+REQUEST_DELAY      = 0.5   # pausa entre requisições (evita 429 preemptivo)
 
 
 class ContaAzulClient:
@@ -44,7 +46,11 @@ class ContaAzulClient:
         path: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
-        url = f"{API_BASE}{path}"
+        # Garantir que o path não duplique barras e seja concatenado corretamente
+        if path.startswith("/"):
+            url = f"{API_BASE}{path}"
+        else:
+            url = f"{API_BASE}/{path}"
         last_exc: Optional[Exception] = None
 
         for attempt in range(1, MAX_RETRIES + 1):
@@ -55,7 +61,12 @@ class ContaAzulClient:
 
                 # Rate-limit ou erro de servidor → retry com backoff
                 if resp.status_code in (429, 500, 502, 503, 504):
-                    wait = BACKOFF_BASE ** attempt
+                    # Respeitar o cabeçalho Retry-After se presente
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        wait = float(retry_after) + 1
+                    else:
+                        wait = BACKOFF_BASE * (2 ** (attempt - 1))  # backoff exponencial real
                     logger.warning(
                         "HTTP %d em %s (tentativa %d/%d) — aguardando %.1fs",
                         resp.status_code, path, attempt, MAX_RETRIES, wait,
@@ -64,7 +75,8 @@ class ContaAzulClient:
                     last_exc = None
                     continue
 
-                logger.debug("%-6s %s → %d  (%.2fs)", method, path, resp.status_code, elapsed)
+                logger.debug("%-6s %s -> %d  (%.2fs)", method, path, resp.status_code, elapsed)
+                time.sleep(REQUEST_DELAY)  # pausa preventiva entre requisições
                 return resp
 
             except requests.exceptions.ConnectionError as exc:
@@ -92,7 +104,8 @@ class ContaAzulClient:
         if isinstance(body, list):
             return body
         if isinstance(body, dict):
-            for key in ("items", "data", "content", "result", "results", "registros"):
+            # Prioriza chaves variadas de retorno das APIs ContaAzul
+            for key in ("itens", "items", "data", "content", "result", "results", "registros", "items_totais", "itens_totais"):
                 if key in body and isinstance(body[key], list):
                     return body[key]
         return []
@@ -117,13 +130,15 @@ class ContaAzulClient:
             if "total_pages" in body:
                 return current_page < body["total_pages"]
             # total + pageSize → calcular total de páginas
-            total = body.get("total") or body.get("totalElements") or body.get("totalRegistros")
-            size  = body.get("pageSize") or body.get("size") or PAGE_SIZE
-            if total is not None:
-                total_pages = (int(total) + int(size) - 1) // int(size)
+            total = (body.get("total") or body.get("totalElements") or body.get("totalRegistros")
+                     or body.get("itens_totais") or body.get("items_totais") or body.get("totalItems"))
+            # Tenta detectar o tamanho real da página se o servidor ignorou o nosso pedido
+            actual_size = body.get("pageSize") or body.get("size") or items_returned or PAGE_SIZE
+            if total is not None and actual_size > 0:
+                total_pages = (int(total) + int(actual_size) - 1) // int(actual_size)
                 return current_page < total_pages
-        # Fallback: se retornou 0 itens, acabou
-        return items_returned >= PAGE_SIZE  # pode ter mais, tenta próxima
+        # Fallback: se retornou o que parece ser uma página cheia, tenta a próxima
+        return items_returned > 0 and items_returned >= 10  # Bridge usa 10 como padrão
 
     # ── Paginação automática ───────────────────────────────────────────────────
 
@@ -140,7 +155,7 @@ class ContaAzulClient:
         page = 1
 
         while True:
-            params: Dict[str, Any] = {"page": page, "pageSize": PAGE_SIZE}
+            params: Dict[str, Any] = {"pagina": page, "tamanho_pagina": PAGE_SIZE}
             if extra_params:
                 params.update(extra_params)
 
@@ -170,5 +185,5 @@ class ContaAzulClient:
 
             page += 1
 
-        logger.info("✓ %-35s → %d registro(s)", path, len(all_items))
+        logger.info("[OK] %-35s -> %d registro(s)", path, len(all_items))
         return all_items

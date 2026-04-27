@@ -29,10 +29,10 @@ except ImportError:
 # ── Configuração de logging ───────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(open(1, 'w', encoding='utf-8', closefd=False)),  # stdout UTF-8
         logging.FileHandler("etl_run.log", encoding="utf-8"),
     ],
 )
@@ -83,14 +83,15 @@ def _run_safe(result: SyncResult, fn: Any, *args: Any) -> None:
 from typing import Any, List
 
 
-def run() -> bool:
+def run(full_sync: bool = False) -> bool:
     """
     Executa o pipeline completo.
     Retorna True se todos os syncs tiveram sucesso, False se algum falhou.
     """
+    mode = "full" if full_sync else "incremental"
     started_at = datetime.now(timezone.utc)
     logger.info("=" * 60)
-    logger.info("INÍCIO DO ETL — %s", started_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
+    logger.info("INÍCIO DO ETL (%s) — %s", mode.upper(), started_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
     logger.info("=" * 60)
 
     # ── 1. Autenticação ───────────────────────────────────────────────────────
@@ -120,14 +121,24 @@ def run() -> bool:
         ("produtos",              sync_produtos,           ()),
         ("clientes",              sync_clientes,           ()),
         ("fornecedores",          sync_fornecedores,       ()),
-        ("contas_receber",        sync_contas_receber,     ()),
-        ("contas_pagar",          sync_contas_pagar,       ()),
-        ("vendas",                sync_vendas,             ()),
+        ("contas_receber",        sync_contas_receber,     (mode,)),
+        ("contas_pagar",          sync_contas_pagar,       (mode,)),
+        ("vendas",                sync_vendas,             (mode,)),
     ]
+
+    def _get_conn() -> psycopg2.extensions.connection:
+        """Retorna conexao ativa, reconectando se necessario."""
+        try:
+            conn.cursor().execute("SELECT 1")
+            return conn
+        except Exception:
+            logger.warning("Reconectando ao banco (conexao perdida)...")
+            return get_connection()
 
     for name, fn, extra in syncs:
         r = SyncResult(name)
-        _run_safe(r, fn, conn, client, *extra)
+        active_conn = _get_conn()
+        _run_safe(r, fn, active_conn, client, *extra)
         results.append(r)
 
     # ── 4. Fechar conexão ─────────────────────────────────────────────────────
@@ -144,22 +155,22 @@ def run() -> bool:
     all_ok = all(r.ok for r in results)
 
     logger.info("")
-    logger.info("─" * 60)
+    logger.info("-" * 60)
     logger.info("  RESUMO DO ETL")
-    logger.info("─" * 60)
+    logger.info("-" * 60)
 
     total_records = 0
     for r in results:
-        mark = "✓" if r.ok else "✗"
+        mark = "[OK]" if r.ok else "[ERRO]"
         detail = f"{r.records} registro(s)" if r.ok else f"ERRO: {r.error[:80]}"
         logger.info("  %s  %-25s %s", mark, r.name, detail)
         total_records += r.records
 
-    logger.info("─" * 60)
+    logger.info("-" * 60)
     logger.info("  Total de registros sincronizados: %d", total_records)
-    logger.info("  Duração: %.1fs", duration_s)
-    logger.info("  Status:  %s", "✅ SUCESSO" if all_ok else "⚠️  COM FALHAS")
-    logger.info("─" * 60)
+    logger.info("  Duracao: %.1fs", duration_s)
+    logger.info("  Status:  %s", "SUCESSO" if all_ok else "COM FALHAS")
+    logger.info("-" * 60)
 
     return all_ok
 
@@ -167,5 +178,8 @@ def run() -> bool:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    ok = run()
+    # Suporte a flag --full ou variável de ambiente SYNC_MODE=full
+    is_full = "--full" in sys.argv or os.getenv("SYNC_MODE") == "full"
+    
+    ok = run(full_sync=is_full)
     sys.exit(0 if ok else 1)

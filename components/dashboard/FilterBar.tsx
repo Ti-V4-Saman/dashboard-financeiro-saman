@@ -8,6 +8,7 @@ interface FilterBarProps {
   filters: Filters
   setFilters: (f: Filters) => void
   allData: Lancamento[]
+  listaContas: string[]
 }
 
 // ─── Period Picker ─────────────────────────────────────────────────────────────
@@ -563,7 +564,7 @@ function Sep() {
 
 // ─── FilterBar ─────────────────────────────────────────────────────────────────
 
-export function FilterBar({ filters, setFilters, allData }: FilterBarProps) {
+export function FilterBar({ filters, setFilters, allData, listaContas }: FilterBarProps) {
   const categorias = useMemo(() => {
     const set = new Set<string>()
     for (const r of allData)
@@ -588,11 +589,8 @@ export function FilterBar({ filters, setFilters, allData }: FilterBarProps) {
   }, [allData])
 
   const contas = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of allData)
-      if (r.conta && r.conta !== '(em branco)') set.add(r.conta)
-    return Array.from(set).sort()
-  }, [allData])
+    return listaContas.sort()
+  }, [listaContas])
 
   const update = <K extends keyof Filters>(key: K, val: Filters[K]) =>
     setFilters({ ...filters, [key]: val })

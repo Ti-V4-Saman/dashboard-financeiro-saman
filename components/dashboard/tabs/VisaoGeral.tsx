@@ -70,16 +70,26 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data }: Props) {
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+  const op = useMemo(() => data.filter(r => !r.isTransfer && r.situacao === 'Quitado'), [data])
 
   const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
     let rec = 0, desp = 0, atr = 0
     const hoje = new Date()
+    
+    // KPIs principais (apenas realizados)
     for (const r of op) {
       if (r.tipo === 'Receita') rec += r.valor
       else desp += r.valor
-      if (r.situacao?.toLowerCase().includes('atraso') && r.data && r.data < hoje) atr += r.valor
     }
+
+    // Atrasados (olhando para todos os dados, não apenas os 'op' filtrados por Quitado)
+    for (const r of data) {
+      const s = r.situacao?.toLowerCase() || ''
+      if ((s.includes('atraso') || s.includes('aberto') || s.includes('pending')) && r.data && r.data < hoje) {
+        atr += r.valor
+      }
+    }
+
     const res = rec - desp
     return {
       receita: rec,
@@ -88,7 +98,7 @@ export function VisaoGeral({ data }: Props) {
       margem: rec > 0 ? (res / rec) * 100 : 0,
       atrasados: atr,
     }
-  }, [op])
+  }, [op, data])
 
   const semCat = useMemo(() => op.filter(r => !r.cat1 || r.cat1 === '(em branco)').length, [op])
   const semCC = useMemo(() => op.filter(r => !r.cc1 || r.cc1 === '(em branco)').length, [op])

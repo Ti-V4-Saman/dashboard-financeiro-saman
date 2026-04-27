@@ -87,8 +87,8 @@ def upsert(
     )
 
     def _serialize(v: Any) -> Any:
-        """Converte dict/list para string JSON (psycopg2 não faz isso automaticamente)."""
-        if isinstance(v, (dict, list)):
+        """Converte dict para string JSON. Listas saem nativas (PG Array)."""
+        if isinstance(v, dict):
             return json.dumps(v, ensure_ascii=False)
         return v
 
@@ -98,7 +98,14 @@ def upsert(
     ]
 
     with conn.cursor() as cur:
-        psycopg2.extras.execute_batch(cur, sql, tuples, page_size=500)
+        try:
+            psycopg2.extras.execute_batch(cur, sql, tuples, page_size=500)
+        except Exception as e:
+            logger.error(f"UPSERT ERROR in table {table}: {e}")
+            # Log the first tuple to help debug data issues
+            if tuples:
+                logger.error(f"First tuple in failed batch: {tuples[0]}")
+            raise
 
     return len(rows)
 
@@ -114,7 +121,7 @@ def log_sync_start(
     Retorna o id gerado para posterior atualização.
     """
     sql = """
-        INSERT INTO ca.sync_log (endpoint, iniciado_em, status)
+        INSERT INTO ca.sync_log (tabela, iniciado_em, status)
         VALUES (%s, %s, 'em_andamento')
         RETURNING id
     """
@@ -139,8 +146,8 @@ def log_sync_end(
     """Atualiza a linha de log com resultado final."""
     sql = """
         UPDATE ca.sync_log
-        SET finalizado_em            = %s,
-            registros_sincronizados  = %s,
+        SET concluido_em             = %s,
+            registros_inseridos      = %s,
             status                   = %s,
             mensagem_erro            = %s
         WHERE id = %s

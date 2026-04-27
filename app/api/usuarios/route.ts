@@ -1,31 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { getSheetRows, appendSheetRow, updateSheetCell } from '@/lib/gsheetsApi'
+import { Pool } from 'pg'
 
-const SHEET = 'USUARIOS'
-// Colunas (1-indexado): NOME=1, CPF=2, EMAIL=3, TELEFONE=4, ATIVO=5, CRIADO_EM=6
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+})
 
 export interface Usuario {
-  rowIndex: number   // linha na planilha (começa em 2, pois linha 1 é cabeçalho)
+  id: number
   nome: string
-  cpf: string
   email: string
-  telefone: string
   ativo: boolean
-  criadoEm: string
-}
-
-function parseRows(rows: string[][]): Usuario[] {
-  if (rows.length < 2) return []
-  return rows.slice(1).map((r, i) => ({
-    rowIndex: i + 2,
-    nome: r[0] || '',
-    cpf: r[1] || '',
-    email: r[2] || '',
-    telefone: r[3] || '',
-    ativo: (r[4] || 'TRUE').toUpperCase() === 'TRUE',
-    criadoEm: r[5] || '',
-  }))
+  criado_em: string
 }
 
 async function isAdmin(): Promise<boolean> {
@@ -39,8 +26,10 @@ export async function GET() {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
   }
   try {
-    const rows = await getSheetRows(SHEET)
-    return NextResponse.json(parseRows(rows))
+    const { rows } = await pool.query(
+      'SELECT id, nome, email, ativo, criado_em FROM ca.usuarios_dashboard ORDER BY criado_em DESC'
+    )
+    return NextResponse.json(rows)
   } catch (err) {
     console.error('[GET /api/usuarios]', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
@@ -53,18 +42,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
   }
   try {
-    const { nome, cpf, email, telefone } = await req.json() as Partial<Usuario>
+    const { nome, email } = await req.json() as Partial<Usuario>
     if (!email) return NextResponse.json({ error: 'email obrigatório' }, { status: 400 })
 
-    const criadoEm = new Date().toLocaleDateString('pt-BR')
-    await appendSheetRow(SHEET, [
-      nome || '',
-      cpf  || '',
-      email.trim().toLowerCase(),
-      telefone || '',
-      'TRUE',
-      criadoEm,
-    ])
+    await pool.query(
+      'INSERT INTO ca.usuarios_dashboard (nome, email) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET ativo = TRUE, nome = EXCLUDED.nome',
+      [nome || '', email.trim().toLowerCase()]
+    )
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[POST /api/usuarios]', err)
@@ -78,8 +62,11 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
   }
   try {
-    const { rowIndex, ativo } = await req.json() as { rowIndex: number; ativo: boolean }
-    await updateSheetCell(SHEET, rowIndex, 5, ativo ? 'TRUE' : 'FALSE')
+    const { id, ativo } = await req.json() as { id: number; ativo: boolean }
+    await pool.query(
+      'UPDATE ca.usuarios_dashboard SET ativo = $1 WHERE id = $2',
+      [ativo, id]
+    )
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[PATCH /api/usuarios]', err)
@@ -87,15 +74,14 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-// ── DELETE — remove usuário (soft-delete: limpa email + desativa) ─────────────
+// ── DELETE — remove usuário ───────────────────────────────────────────────────
 export async function DELETE(req: NextRequest) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
   }
   try {
-    const { rowIndex } = await req.json() as { rowIndex: number }
-    await updateSheetCell(SHEET, rowIndex, 5, 'FALSE')
-    await updateSheetCell(SHEET, rowIndex, 3, `REMOVIDO_${Date.now()}`)
+    const { id } = await req.json() as { id: number }
+    await pool.query('DELETE FROM ca.usuarios_dashboard WHERE id = $1', [id])
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[DELETE /api/usuarios]', err)

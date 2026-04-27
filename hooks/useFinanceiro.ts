@@ -6,7 +6,11 @@ import type { Lancamento, Filters } from '@/lib/types'
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
 export function useFinanceiro() {
-  const { data: raw, isLoading, mutate } = useSWR<Lancamento[]>('/api/financeiro', fetcher)
+  const { data: raw, isLoading, mutate } = useSWR<{ lancamentos: Lancamento[], contas: string[] }>(
+    '/api/financeiro', 
+    fetcher,
+    { refreshInterval: 15 * 60 * 1000 } // Atualiza o dash a cada 15 min
+  )
   const [filters, setFilters] = useState<Filters>(() => {
     const now = new Date()
     const y = now.getFullYear()
@@ -20,10 +24,11 @@ export function useFinanceiro() {
   })
 
   const allData = useMemo(() => {
-    if (!raw) return []
-    // converter datas (JSON perde Date objects)
-    return raw.map(r => ({ ...r, data: r.data ? new Date(r.data) : null }))
+    if (!raw?.lancamentos || !Array.isArray(raw.lancamentos)) return []
+    return raw.lancamentos.map(r => ({ ...r, data: r.data ? new Date(r.data) : null }))
   }, [raw])
+
+  const listaContas = useMemo(() => raw?.contas || [], [raw])
 
   const filteredData = useMemo(() => {
     return allData.filter(r => {
@@ -45,5 +50,5 @@ export function useFinanceiro() {
     })
   }, [allData, filters])
 
-  return { allData, filteredData, filters, setFilters, isLoading, refresh: mutate }
+  return { allData, filteredData, filters, setFilters, isLoading, refresh: mutate, listaContas }
 }

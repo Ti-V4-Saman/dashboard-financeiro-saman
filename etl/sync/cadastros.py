@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 def _map_categoria(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "id":          str(raw.get("id") or raw.get("uuid") or ""),
-        "nome":        str(raw.get("name") or raw.get("nome") or ""),
-        "tipo":        str(raw.get("type") or raw.get("tipo") or ""),
-        "ativo":       bool(raw.get("active", raw.get("ativo", True))),
-        "payload_json": raw,
+        "id":               str(raw.get("id") or raw.get("uuid") or ""),
+        "nome":             str(raw.get("name") or raw.get("nome") or ""),
+        "tipo":             str(raw.get("type") or raw.get("tipo") or ""),
+        "categoria_dre":    str(raw.get("dre_category") or raw.get("categoria_dre") or ""),
+        "categoria_pai_id": str(raw.get("parent_id") or raw.get("categoria_pai_id") or "") or None,
+        "ativo":            bool(raw.get("active", raw.get("ativo", True))),
     }
 
 
@@ -35,7 +36,6 @@ def _map_centro_custo(raw: Dict[str, Any]) -> Dict[str, Any]:
         "id":          str(raw.get("id") or raw.get("uuid") or ""),
         "nome":        str(raw.get("name") or raw.get("nome") or ""),
         "ativo":       bool(raw.get("active", raw.get("ativo", True))),
-        "payload_json": raw,
     }
 
 
@@ -45,9 +45,8 @@ def _map_conta_financeira(raw: Dict[str, Any]) -> Dict[str, Any]:
         "nome":           str(raw.get("name") or raw.get("nome") or ""),
         "tipo":           str(raw.get("type") or raw.get("tipo") or ""),
         "banco":          str(raw.get("bank") or raw.get("banco") or ""),
-        "saldo_inicial":  float(raw.get("initialBalance") or raw.get("saldo_inicial") or 0),
+        "saldo_inicial":  float(raw.get("initial_balance") or raw.get("initialBalance") or raw.get("saldo_inicial") or 0),
         "ativo":          bool(raw.get("active", raw.get("ativo", True))),
-        "payload_json":   raw,
     }
 
 
@@ -56,10 +55,9 @@ def _map_produto(raw: Dict[str, Any]) -> Dict[str, Any]:
         "id":           str(raw.get("id") or raw.get("uuid") or ""),
         "nome":         str(raw.get("name") or raw.get("nome") or ""),
         "codigo":       str(raw.get("code") or raw.get("codigo") or ""),
-        "preco":        float(raw.get("price") or raw.get("preco") or 0),
+        "preco_venda":  float(raw.get("price") or raw.get("preco") or 0),
         "unidade":      str(raw.get("unit") or raw.get("unidade") or ""),
         "ativo":        bool(raw.get("active", raw.get("ativo", True))),
-        "payload_json": raw,
     }
 
 
@@ -91,7 +89,7 @@ def _sync_endpoint(
         if mapped:
             records = upsert(conn, table, mapped, conflict_col="id")
             conn.commit()
-            logger.info("✓ %-30s → %d registro(s) em %s", api_path, records, table)
+            logger.info("%-30s -> %d registro(s) em %s", api_path, records, table)
         else:
             logger.warning("Nenhum registro válido retornado de %s", api_path)
 
@@ -99,7 +97,7 @@ def _sync_endpoint(
 
     except Exception as exc:
         conn.rollback()
-        logger.error("✗ Erro em %s: %s", api_path, exc)
+        logger.error("Erro em %s: %s", api_path, exc)
         log_sync_end(conn, log_id, records, status="erro", error_msg=str(exc))
 
     return records
@@ -111,25 +109,29 @@ def sync_categorias(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    return _sync_endpoint(conn, client, "/v1/categorias", "ca.categorias", _map_categoria)
+    totals = 0
+    # Precisamos sincronizar ambos os tipos para garantir que chaves estrangeiras funcionem
+    for tipo in ["RECEITA", "DESPESA"]:
+        totals += _sync_endpoint(conn, client, f"/categorias?tipo={tipo}", "ca.categorias", _map_categoria)
+    return totals
 
 
 def sync_centros_custo(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    return _sync_endpoint(conn, client, "/v1/centros-de-custo", "ca.centros_custo", _map_centro_custo)
+    return _sync_endpoint(conn, client, "/centro-de-custo", "ca.centros_custo", _map_centro_custo)
 
 
 def sync_contas_financeiras(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    return _sync_endpoint(conn, client, "/v1/contas-financeiras", "ca.contas_financeiras", _map_conta_financeira)
+    return _sync_endpoint(conn, client, "/conta-financeira", "ca.contas_financeiras", _map_conta_financeira)
 
 
 def sync_produtos(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    return _sync_endpoint(conn, client, "/v1/produtos", "ca.produtos", _map_produto)
+    return _sync_endpoint(conn, client, "/produtos", "ca.produtos", _map_produto)

@@ -26,7 +26,7 @@ function fTel(v: string) {
   return n.replace(/(\d{2})(\d{5})(\d{0,4})/, '($1) $2-$3')
 }
 
-const EMPTY = { nome: '', cpf: '', email: '', telefone: '' }
+const EMPTY = { nome: '', email: '' }
 
 export function UsuariosTab() {
   const { data: usuarios, error, mutate, isLoading } = useSWR<Usuario[]>('/api/usuarios', fetcher)
@@ -67,7 +67,7 @@ export function UsuariosTab() {
     await fetch('/api/usuarios', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rowIndex: u.rowIndex, ativo: !u.ativo }),
+      body: JSON.stringify({ id: u.id, ativo: !u.ativo }),
     })
     mutate()
   }
@@ -78,7 +78,7 @@ export function UsuariosTab() {
     await fetch('/api/usuarios', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rowIndex: u.rowIndex }),
+      body: JSON.stringify({ id: u.id }),
     })
     mutate()
     flash('ok', 'Usuário removido.')
@@ -143,10 +143,8 @@ export function UsuariosTab() {
         {showForm && (
           <div style={{ padding: '16px', borderBottom: '1px solid var(--line)', background: 'var(--surf2)', display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
             {[
-              { key: 'nome',     label: 'Nome completo', placeholder: 'João da Silva',         width: 200 },
-              { key: 'email',    label: 'E-mail *',      placeholder: 'joao@empresa.com',       width: 210 },
-              { key: 'cpf',     label: 'CPF',           placeholder: '000.000.000-00',          width: 145 },
-              { key: 'telefone', label: 'Telefone',      placeholder: '(11) 99999-9999',        width: 155 },
+              { key: 'nome',     label: 'Nome completo', placeholder: 'João da Silva',         width: 300 },
+              { key: 'email',    label: 'E-mail *',      placeholder: 'joao@empresa.com',       width: 300 },
             ].map(({ key, label, placeholder, width }) => (
               <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <label style={{ fontSize: 10, fontWeight: 600, color: 'var(--ink3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</label>
@@ -200,12 +198,12 @@ export function UsuariosTab() {
           <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%' }}>
             <thead>
               <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
-                {['Nome', 'E-mail', 'CPF', 'Telefone', 'Cadastro', 'Status', 'Ações'].map((h, i) => (
+                {['Nome', 'E-mail', 'Cadastro', 'Status', 'Ações'].map((h, i) => (
                   <th
                     key={h}
                     style={{
                       padding: '10px 16px',
-                      textAlign: i >= 5 ? 'center' : 'left',
+                      textAlign: i >= 3 ? 'center' : 'left',
                       fontSize: 11, fontWeight: 600, color: 'var(--ink3)',
                       whiteSpace: 'nowrap',
                       borderLeft: i > 0 ? '1px solid var(--line)' : undefined,
@@ -226,36 +224,30 @@ export function UsuariosTab() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={7} style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12 }}>
+                  <td colSpan={5} style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12 }}>
                     <div style={{ color: 'var(--red)', fontWeight: 600, marginBottom: 6 }}>
-                      Service Account não configurado
+                      Erro ao carregar usuários
                     </div>
                     <div style={{ color: 'var(--ink3)', lineHeight: 1.6 }}>
-                      Para gerenciar usuários pela planilha, configure as variáveis de ambiente na Vercel:<br />
-                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>GOOGLE_SA_EMAIL</code>{' '}
-                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>GOOGLE_SA_KEY</code>{' '}
-                      <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>SHEETS_ID</code>
-                    </div>
-                    <div style={{ color: 'var(--ink3)', marginTop: 8, fontSize: 11 }}>
-                      Enquanto isso, use <code style={{ background: 'var(--surf2)', padding: '2px 6px', borderRadius: 4 }}>ALLOWED_EMAILS</code> na Vercel para controlar o acesso.
+                      Verifique a conexão com o banco de dados Neon.
                     </div>
                   </td>
                 </tr>
               )}
               {!isLoading && !error && lista.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--ink3)', fontSize: 12 }}>
+                  <td colSpan={5} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--ink3)', fontSize: 12 }}>
                     Nenhum usuário cadastrado. Clique em &quot;Novo usuário&quot; para adicionar.
                   </td>
                 </tr>
               )}
               {lista.map(u => (
-                <tr key={u.rowIndex} style={{ background: u.ativo ? 'var(--surface)' : '#fef2f2', borderBottom: '1px solid var(--line)' }}>
+                <tr key={u.id} style={{ background: u.ativo ? 'var(--surface)' : '#fef2f2', borderBottom: '1px solid var(--line)' }}>
                   <td style={{ padding: '10px 16px', color: 'var(--ink)', fontWeight: 500 }}>{u.nome || '—'}</td>
                   <td style={{ padding: '10px 16px', color: 'var(--ink2)', borderLeft: '1px solid var(--line)' }}>{u.email}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--ink3)', borderLeft: '1px solid var(--line)', fontVariantNumeric: 'tabular-nums' }}>{u.cpf || '—'}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>{u.telefone || '—'}</td>
-                  <td style={{ padding: '10px 16px', color: 'var(--ink3)', borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }}>{u.criadoEm || '—'}</td>
+                  <td style={{ padding: '10px 16px', color: 'var(--ink3)', borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }}>
+                    {u.criado_em ? new Date(u.criado_em).toLocaleDateString('pt-BR') : '—'}
+                  </td>
                   <td style={{ padding: '10px 16px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
                     <span style={{
                       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -293,7 +285,7 @@ export function UsuariosTab() {
 
       {/* Nota de rodapé */}
       <p style={{ fontSize: 10, color: 'var(--ink3)', textAlign: 'center', paddingBottom: 8 }}>
-        Dados armazenados na aba <strong>USUARIOS</strong> da planilha do Google Sheets.
+        Dados armazenados com segurança no banco de dados <strong>PostgreSQL (Neon)</strong>.
         Alterações refletem imediatamente no próximo login.
       </p>
     </div>

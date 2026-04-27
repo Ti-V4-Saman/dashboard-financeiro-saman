@@ -22,6 +22,7 @@ interface DashboardLayoutProps {
   setFilters: (f: Filters) => void
   isLoading: boolean
   refresh: () => void
+  listaContas: string[]
 }
 
 export function DashboardLayout({
@@ -31,6 +32,7 @@ export function DashboardLayout({
   setFilters,
   isLoading,
   refresh,
+  listaContas,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
   const { data: session } = useSession()
@@ -39,7 +41,7 @@ export function DashboardLayout({
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
       <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
-      <FilterBar filters={filters} setFilters={setFilters} allData={allData} />
+      <FilterBar filters={filters} setFilters={setFilters} allData={allData} listaContas={listaContas} />
       <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} />
 
       <main className="px-6 py-5 w-full">
