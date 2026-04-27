@@ -4,7 +4,12 @@ import { Pool } from 'pg'
 
 // ── Configuração de Acesso ───────────────────────────────────────────────────
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase()
-const MASTER_ADMINS = [ADMIN_EMAIL, 'felipe@v4company.com'].filter(Boolean)
+const MASTER_ADMINS = [
+  ADMIN_EMAIL, 
+  'giovani.maia@v4company.com',
+  'ti.bh@v4company.com',
+  'felipe@v4company.com'
+].filter(Boolean)
 
 /**
  * Verifica permissão no PostgreSQL para ambiente Node.js.
