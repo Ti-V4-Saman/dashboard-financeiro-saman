@@ -4,6 +4,7 @@ import { Pool } from 'pg'
 
 // ── Configuração de Acesso ───────────────────────────────────────────────────
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase()
+const MASTER_ADMINS = [ADMIN_EMAIL, 'felipe@v4company.com'].filter(Boolean)
 
 /**
  * Verifica permissão no PostgreSQL para ambiente Node.js.
@@ -12,8 +13,8 @@ async function isAllowed(email: string | null | undefined): Promise<boolean> {
   if (!email) return false
   const e = email.toLowerCase()
 
-  // Master Admin (sempre tem acesso para poder gerenciar os outros)
-  if (ADMIN_EMAIL && e === ADMIN_EMAIL) return true
+  // Master Admins (sempre têm acesso para poder gerenciar os outros)
+  if (MASTER_ADMINS.includes(e)) return true
 
   try {
     const pool = new Pool({
@@ -47,7 +48,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     async jwt({ token, user }) {
       const email = ((user?.email || token.email) ?? '').toLowerCase()
-      token.isAdmin = !!ADMIN_EMAIL && email === ADMIN_EMAIL
+      token.isAdmin = MASTER_ADMINS.includes(email)
       return token
     },
     async session({ session, token }) {
