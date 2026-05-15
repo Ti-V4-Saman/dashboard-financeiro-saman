@@ -1,8 +1,7 @@
 """
 etl/sync/pessoas.py
 Sincroniza clientes e fornecedores em ca.pessoas.
-  - /v1/clientes      → ca.pessoas com papel='CLIENTE'
-  - /v1/fornecedores  → ca.pessoas com papel='FORNECEDOR'
+  - /v1/pessoas → ca.pessoas (clientes + fornecedores)
 """
 
 import logging
@@ -16,6 +15,11 @@ from etl.db import log_sync_end, log_sync_start, upsert
 logger = logging.getLogger(__name__)
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _str(v: Any) -> str:
+    return str(v) if v is not None else ""
+
 def _extract_phone(raw: Dict[str, Any]) -> str:
     """Extrai primeiro telefone de formatos variados."""
     phones = (
@@ -27,21 +31,20 @@ def _extract_phone(raw: Dict[str, Any]) -> str:
     if isinstance(phones, list) and phones:
         first = phones[0]
         if isinstance(first, dict):
-            return str(first.get("number") or first.get("numero") or "")
-        return str(first)
-    return str(raw.get("phone") or raw.get("telefone") or "")
+            return _str(first.get("number") or first.get("numero") or "")
+        return _str(first)
+    return _str(raw.get("phone") or raw.get("telefone") or "")
 
+
+# ── Mapeador ──────────────────────────────────────────────────────────────────
 
 def _map_pessoa(raw: dict, papel_inicial: str) -> dict:
-    # Campos reais retornados pela API v2 Bridge (descobertos em 2026-04-21)
     perfis = raw.get("perfis") or raw.get("roles") or raw.get("papeis") or [papel_inicial]
     if not isinstance(perfis, list):
         perfis = [perfis]
-    # Normaliza para uppercase
-    perfis = [str(p).upper() for p in perfis]
+    perfis = [_str(p).upper() for p in perfis]
 
     tipo = raw.get("tipo_pessoa") or raw.get("personType") or raw.get("tipo") or "LEGAL"
-    # Normaliza: "Juridica" -> "LEGAL", "Fisica" -> "NATURAL"
     if tipo.lower() in ("juridica", "jurídica"):
         tipo = "LEGAL"
     elif tipo.lower() in ("fisica", "física"):
@@ -49,21 +52,36 @@ def _map_pessoa(raw: dict, papel_inicial: str) -> dict:
 
     telefone = _extract_phone(raw)
 
+    endereco = raw.get("endereco") or raw.get("address") or {}
+    if not isinstance(endereco, dict):
+        endereco = {}
+
     return {
-        "id":       str(raw.get("id") or raw.get("uuid") or ""),
-        "nome":     str(raw.get("nome") or raw.get("name") or ""),
-        "tipo":     tipo,
-        "papel":    perfis,
-        "cpf_cnpj": str(raw.get("documento") or raw.get("document") or raw.get("cpf") or raw.get("cnpj") or ""),
-        "email":    str(raw.get("email") or ""),
-        "telefone": str(raw.get("telefone") or telefone or ""),
-        "celular":  str(raw.get("celular") or raw.get("mobile_phone") or ""),
-        "cidade":   str((raw.get("endereco") or raw.get("address") or {}).get("cidade") or (raw.get("address") or {}).get("city") or raw.get("cidade") or ""),
-        "estado":   str((raw.get("endereco") or raw.get("address") or {}).get("estado") or (raw.get("address") or {}).get("state") or raw.get("estado") or "")[:2],
-        "cep":      str((raw.get("endereco") or raw.get("address") or {}).get("cep") or (raw.get("address") or {}).get("zip_code") or raw.get("cep") or ""),
-        "ativo":    bool(raw.get("ativo", raw.get("active", True))),
+        "id":                 _str(raw.get("id") or raw.get("uuid") or ""),
+        "nome":               _str(raw.get("nome") or raw.get("name") or ""),
+        "tipo":               tipo,
+        "papel":              perfis,
+        "cpf_cnpj":           _str(raw.get("documento") or raw.get("document") or raw.get("cpf") or raw.get("cnpj") or ""),
+        "email":              _str(raw.get("email") or ""),
+        "telefone":           _str(raw.get("telefone") or telefone or ""),
+        "celular":            _str(raw.get("celular") or raw.get("mobile_phone") or ""),
+        "cidade":             _str(endereco.get("cidade") or endereco.get("city") or raw.get("cidade") or ""),
+        "estado":             _str(endereco.get("estado") or endereco.get("state") or raw.get("estado") or "")[:2],
+        "cep":                _str(endereco.get("cep") or endereco.get("zip_code") or raw.get("cep") or ""),
+        "ativo":              bool(raw.get("ativo", raw.get("active", True))),
+        # Campos novos
+        "nome_fantasia":      _str(raw.get("nome_fantasia") or raw.get("trading_name") or "") or None,
+        "inscricao_estadual": _str(raw.get("inscricao_estadual") or raw.get("state_registration") or "") or None,
+        "logradouro":         _str(endereco.get("logradouro") or endereco.get("street") or "") or None,
+        "numero_endereco":    _str(endereco.get("numero") or endereco.get("number") or "") or None,
+        "complemento":        _str(endereco.get("complemento") or endereco.get("complement") or "") or None,
+        "bairro":             _str(endereco.get("bairro") or endereco.get("neighborhood") or "") or None,
+        "site":               _str(raw.get("site") or raw.get("website") or "") or None,
+        "data_atualizacao":   _str(raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
     }
 
+
+# ── Funções internas ──────────────────────────────────────────────────────────
 
 def _sync_papel(
     conn: psycopg2.extensions.connection,
@@ -71,7 +89,7 @@ def _sync_papel(
     api_path: str,
     papel: str,
 ) -> int:
-    log_id = log_sync_start(conn, api_path)
+    log_id  = log_sync_start(conn, api_path)
     records = 0
 
     try:
@@ -107,21 +125,20 @@ def _sync_pessoas_all(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    """Sincroniza TODAS as pessoas (clientes + fornecedores) de uma só vez via /pessoas."""
-    log_id = log_sync_start(conn, "/pessoas")
+    """Sincroniza TODAS as pessoas via /pessoas."""
+    log_id  = log_sync_start(conn, "/pessoas")
     records = 0
 
     try:
         raw_list = client.get_all("/pessoas")
-        mapped = []
+        mapped: List[Dict[str, Any]] = []
 
         for raw in raw_list:
             if not isinstance(raw, dict):
                 continue
-            # Detecta papel a partir dos perfis da API (usa os próprios dados)
-            perfis = raw.get("perfis") or ["CLIENTE"]
-            papel_inicial = str(perfis[0]).upper() if perfis else "CLIENTE"
-            row = _map_pessoa(raw, papel_inicial)
+            perfis       = raw.get("perfis") or ["CLIENTE"]
+            papel_inicial = _str(perfis[0]).upper() if perfis else "CLIENTE"
+            row          = _map_pessoa(raw, papel_inicial)
             if not row["id"]:
                 continue
             mapped.append(row)
@@ -143,6 +160,8 @@ def _sync_pessoas_all(
     return records
 
 
+# ── Funções públicas ──────────────────────────────────────────────────────────
+
 def sync_clientes(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
@@ -155,6 +174,6 @@ def sync_fornecedores(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    """Retorna 0 para não duplicar a sync (já feita em sync_clientes)."""
-    logger.info("[SKIP] fornecedores jah sincronizados junto com clientes via /pessoas")
+    """Retorna 0 — já sincronizado junto com clientes via /pessoas."""
+    logger.info("[SKIP] fornecedores já sincronizados junto com clientes via /pessoas")
     return 0
