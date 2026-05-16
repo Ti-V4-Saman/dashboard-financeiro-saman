@@ -316,17 +316,24 @@ def _map_item_venda(raw: Dict[str, Any], venda_id: str) -> Dict[str, Any]:
 
 def _map_nota_fiscal(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "id":           _str(raw.get("id") or raw.get("uuid") or ""),
-        "numero":       _int(raw.get("numero") or raw.get("number") or 0) or None,
-        "serie":        _str(raw.get("serie") or raw.get("series") or "") or None,
-        "status":       _str(raw.get("status") or raw.get("situacao") or "") or None,
-        "chave_acesso": _str(raw.get("chave_acesso") or raw.get("access_key") or "") or None,
-        "data_emissao": _str(raw.get("data_emissao") or raw.get("emission_date") or "") or None,
-        "venda_id":     _id(raw.get("venda") or raw.get("id_venda") or raw.get("sale")),
-        "cliente_id":   _id(raw.get("cliente") or raw.get("customer")),
-        "valor_total":  _float(raw.get("valor_total") or raw.get("total") or 0),
-        "tipo":         _str(raw.get("tipo") or raw.get("type") or "") or None,
-        "synced_at":    datetime.now(timezone.utc),
+        "id":               _str(raw.get("id") or raw.get("uuid") or ""),
+        "numero":           _int(raw.get("numero") or raw.get("number") or raw.get("numero_nfse") or 0) or None,
+        "serie":            _str(raw.get("serie") or raw.get("series") or "") or None,
+        "status":           _str(raw.get("status") or raw.get("situacao") or "") or None,
+        "chave_acesso":     _str(raw.get("chave_acesso") or raw.get("access_key") or "") or None,
+        "data_emissao":     _str(raw.get("data_emissao") or raw.get("emission_date") or raw.get("data_competencia") or "") or None,
+        "venda_id":         _id(raw.get("venda") or raw.get("id_venda") or raw.get("sale")),
+        "cliente_id":       _id(raw.get("cliente") or raw.get("customer")),
+        "valor_total":      _float(raw.get("valor_total") or raw.get("total") or raw.get("valor_total_nfse") or 0),
+        "tipo":             _str(raw.get("tipo") or raw.get("type") or "") or None,
+        "synced_at":        datetime.now(timezone.utc),
+        # Campos extras
+        "contrato_id":      _id(raw.get("id_contrato") or raw.get("contrato")),
+        "numero_venda":     _str(raw.get("numero_venda") or ""),
+        "numero_rps":       _int(raw.get("numero_rps")),
+        "numero_nfse":      _int(raw.get("numero_nfse")),
+        "data_competencia": _str(raw.get("data_competencia") or "") or None,
+        "nome_cliente":     _str(raw.get("nome_cliente") or ""),
     }
 
 
@@ -842,13 +849,8 @@ def sync_notas_fiscais(
     mode: str = "incremental",
 ) -> int:
     """
-    Sincroniza notas fiscais.
-
-    Params conforme documentacao oficial (developers.contaazul.com):
-      - /notas-fiscais        : data_inicial + data_final            (NF produto)
-      - /notas-fiscais-servico: data_competencia_de + _ate (max 15d) (NFS-e)
-
-    Auto-detecta qual endpoint responde e usa os params corretos.
+    Sincroniza notas fiscais (Produtos e Serviços).
+    Ambos os endpoints exigem chunks de no máximo 15 dias.
     """
     log_id  = log_sync_start(conn, "/notas-fiscais")
     records = 0
@@ -860,64 +862,59 @@ def sync_notas_fiscais(
         else:
             start_date = today - timedelta(days=30)
 
-        end_date = date(today.year, 12, 31)
+        # Se for incremental, pegamos até hoje. Se for full, até o fim do ano.
+        end_date = date(today.year, 12, 31) if mode == "full" else today
 
         # ── Detecta endpoints disponíveis ────────────────────────────────────
-        probe_start = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+        probe_start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
         probe_end   = today.strftime("%Y-%m-%d")
 
-        resp_p = client._request("GET", "/notas-fiscais", params={
-            "data_inicial": probe_start, "data_final": probe_end,
-            "pagina": 1, "tamanho_pagina": 1,
-        })
-        nf_produto_ok = resp_p.status_code not in (400, 404)
-        logger.info("sync_notas_fiscais: /notas-fiscais status=%d (%s)",
-                    resp_p.status_code, "OK" if nf_produto_ok else "INDISPONIVEL")
+        # Ambos usam os mesmos nomes de params e limite de 15 dias
+        probe_params = {
+            "data_competencia_de": probe_start,
+            "data_competencia_ate": probe_end,
+            "pagina": 1,
+            "tamanho_pagina": 10
+        }
 
-        resp_s = client._request("GET", "/notas-fiscais-servico", params={
-            "data_competencia_de": probe_start, "data_competencia_ate": probe_end,
-            "pagina": 1, "tamanho_pagina": 1,
-        })
+        resp_p = client._request("GET", "/notas-fiscais", params=probe_params)
+        nf_produto_ok = resp_p.status_code not in (400, 404)
+        
+        resp_s = client._request("GET", "/notas-fiscais-servico", params=probe_params)
         nf_servico_ok = resp_s.status_code not in (400, 404)
-        logger.info("sync_notas_fiscais: /notas-fiscais-servico status=%d (%s)",
-                    resp_s.status_code, "OK" if nf_servico_ok else "INDISPONIVEL")
+
+        logger.info("Endpoints NF: Produto=%s, Servico=%s", 
+                    "OK" if nf_produto_ok else "OFF", 
+                    "OK" if nf_servico_ok else "OFF")
 
         if not nf_produto_ok and not nf_servico_ok:
             logger.info("sync_notas_fiscais: nenhum endpoint disponivel -- pulando.")
             log_sync_end(conn, log_id, 0, status="ok")
             return 0
 
-        # ── Coleta dados ──────────────────────────────────────────────────────
+        # ── Coleta dados em chunks de 15 dias ────────────────────────────────
         total_items: List[Dict[str, Any]] = []
+        endpoints_to_sync = []
+        if nf_produto_ok: endpoints_to_sync.append("/notas-fiscais")
+        if nf_servico_ok: endpoints_to_sync.append("/notas-fiscais-servico")
 
-        if nf_produto_ok:
-            logger.info("Buscando NF produto de %s a %s...", start_date, end_date)
-            chunk = client.get_all("/notas-fiscais", extra_params={
-                "data_inicial": start_date.strftime("%Y-%m-%d"),
-                "data_final":   end_date.strftime("%Y-%m-%d"),
-            })
-            total_items.extend(chunk)
-            logger.info("  /notas-fiscais -> %d registros", len(chunk))
-
-        if nf_servico_ok:
-            # NFS-e: maximo 15 dias por requisicao (limite da API)
-            logger.info("Buscando NFS-e de %s a %s (chunks de 15d)...", start_date, end_date)
+        for endpoint in endpoints_to_sync:
+            logger.info("Sincronizando %s de %s a %s...", endpoint, start_date, end_date)
             cursor = start_date
             while cursor <= end_date:
                 chunk_end = min(cursor + timedelta(days=14), end_date)
-                chunk = client.get_all("/notas-fiscais-servico", extra_params={
+                chunk = client.get_all(endpoint, extra_params={
                     "data_competencia_de":  cursor.strftime("%Y-%m-%d"),
                     "data_competencia_ate": chunk_end.strftime("%Y-%m-%d"),
                 })
                 if chunk:
                     total_items.extend(chunk)
-                    logger.info("  NFS-e %s -> %s: %d registros", cursor, chunk_end, len(chunk))
                 cursor = chunk_end + timedelta(days=1)
 
         # ── Mapeia e faz upsert ───────────────────────────────────────────────
         mapped: List[Dict[str, Any]] = []
         for raw in total_items:
-            if not isinstance(raw, dict):
+            if not isinstance(raw, dict) or not raw:
                 continue
             row = _map_nota_fiscal(raw)
             if row.get("id"):
@@ -928,7 +925,7 @@ def sync_notas_fiscais(
                 records = upsert(conn, "ca.notas_fiscais", mapped, conflict_col="id")
                 conn.commit()
             except Exception as fk_err:
-                if "foreign key" in str(fk_err).lower() or "fkey" in str(fk_err).lower():
+                if "foreign key" in str(fk_err).lower():
                     conn.rollback()
                     logger.warning("FK violation em ca.notas_fiscais -- nullificando FKs")
                     for row in mapped:
@@ -938,14 +935,15 @@ def sync_notas_fiscais(
                     conn.commit()
                 else:
                     raise
-            logger.info("%-35s -> %d registro(s) em ca.notas_fiscais", "/notas-fiscais", records)
+            logger.info("[OK] sync_notas_fiscais -> %d registro(s) salvos", records)
         else:
-            logger.info("Nenhuma nota fiscal retornada no periodo")
+            logger.info("Nenhuma nota fiscal encontrada no periodo.")
 
         log_sync_end(conn, log_id, records, status="ok")
 
     except Exception as exc:
-        conn.rollback()
+        try: conn.rollback()
+        except: pass
         logger.error("Erro em sync_notas_fiscais: %s", exc)
         log_sync_end(conn, log_id, records, status="erro", error_msg=str(exc))
 

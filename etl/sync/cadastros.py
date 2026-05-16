@@ -72,21 +72,42 @@ def _map_produto(raw: Dict[str, Any]) -> Dict[str, Any]:
     cat = raw.get("category") or raw.get("categoria") or {}
     if isinstance(cat, str):
         cat = {}
+    
+    # Mapeamento flexivel entre Produto e Servico
+    nome  = raw.get("descricao") or raw.get("name") or raw.get("nome") or ""
+    preco = raw.get("preco") or raw.get("value") or raw.get("price") or raw.get("preco_venda") or 0
+    custo = raw.get("custo") or raw.get("cost") or raw.get("custo_unitario") or 0
+    
+    # Status/Ativo
+    status = raw.get("status") or raw.get("active") or raw.get("ativo")
+    ativo = True
+    if status is not None:
+        if isinstance(status, str):
+            ativo = (status.upper() in ("ATIVO", "ACTIVE", "TRUE"))
+        else:
+            ativo = bool(status)
+
     return {
-        "id":             _str(raw.get("id") or raw.get("uuid") or ""),
-        "nome":           _str(raw.get("name") or raw.get("nome") or ""),
-        "codigo":         _str(raw.get("code") or raw.get("codigo") or "") or None,
-        "tipo":           _str(raw.get("type") or raw.get("tipo") or "") or None,
-        "preco_venda":    _float(raw.get("value") or raw.get("price") or raw.get("preco_venda") or 0),
-        "custo_unitario": _float(raw.get("cost") or raw.get("custo_unitario") or 0),
-        "estoque_atual":  _float(raw.get("stock") or raw.get("estoque_atual") or 0),
-        "unidade":        _str(raw.get("unit") or raw.get("unidade") or "") or None,
-        "categoria_id":   _str(cat.get("id") or "") or None,
-        "ativo":          bool(raw.get("active", raw.get("ativo", True))),
-        "data_criacao":   _str(raw.get("created_at") or raw.get("data_criacao") or "") or None,
-        "data_alteracao": _str(raw.get("updated_at") or raw.get("data_alteracao") or "") or None,
-        "ncm":            _str(raw.get("ncm") or "") or None,
-        "origem":         _str(raw.get("origin") or raw.get("origem") or "") or None,
+        "id":                       _str(raw.get("id") or raw.get("uuid") or ""),
+        "nome":                     _str(nome),
+        "codigo":                   _str(raw.get("codigo") or raw.get("code") or "") or None,
+        "tipo":                     _str(raw.get("tipo") or raw.get("type") or raw.get("tipo_servico") or "") or None,
+        "preco_venda":              _float(preco),
+        "custo_unitario":           _float(custo),
+        "estoque_atual":            _float(raw.get("stock") or raw.get("estoque_atual") or 0),
+        "unidade":                  _str(raw.get("unit") or raw.get("unidade") or "") or None,
+        "categoria_id":             _str(cat.get("id") or "") or None,
+        "ativo":                    ativo,
+        "data_criacao":             _str(raw.get("created_at") or raw.get("data_criacao") or "") or None,
+        "data_alteracao":           _str(raw.get("updated_at") or raw.get("data_alteracao") or "") or None,
+        "ncm":                      _str(raw.get("ncm") or "") or None,
+        "origem":                   _str(raw.get("origin") or raw.get("origem") or "") or None,
+        # Campos extras de servico
+        "id_servico":               raw.get("id_servico"),
+        "tipo_servico":             _str(raw.get("tipo_servico") or ""),
+        "codigo_cnae":              _str(raw.get("codigo_cnae") or ""),
+        "lei_116":                  _str(raw.get("lei_116") or ""),
+        "codigo_municipio_servico": _str(raw.get("codigo_municipio_servico") or ""),
     }
 
 
