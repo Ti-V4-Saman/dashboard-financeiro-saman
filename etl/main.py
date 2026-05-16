@@ -38,7 +38,9 @@ from etl.sync.cadastros import (
     sync_centros_custo,
     sync_contas_financeiras,
     sync_produtos,
-    sync_saldo_contas,          # NOVO
+    sync_saldo_contas,
+    sync_servicos,
+    sync_vendedores,
 )
 from etl.sync.pessoas import sync_clientes, sync_fornecedores
 from etl.sync.financeiro import (
@@ -118,6 +120,8 @@ def run(full_sync: bool = False) -> bool:
         ("centros_custo",      sync_centros_custo,      ()),
         ("contas_financeiras", sync_contas_financeiras, ()),
         ("produtos",           sync_produtos,           ()),
+        ("servicos",           sync_servicos,           ()),
+        ("vendedores",         sync_vendedores,         ()),
         # ── Pessoas (clientes + fornecedores) ──
         ("clientes",           sync_clientes,           ()),
         ("fornecedores",       sync_fornecedores,       ()),

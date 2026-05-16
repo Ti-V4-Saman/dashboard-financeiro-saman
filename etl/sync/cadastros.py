@@ -1,11 +1,12 @@
 """
 etl/sync/cadastros.py
 Sincroniza tabelas de cadastro (sem filtro de data):
-  - /v1/categorias         → ca.categorias
-  - /v1/centros-de-custo   → ca.centros_custo
-  - /v1/contas-financeiras → ca.contas_financeiras
-  - /v1/produtos           → ca.produtos
-  - saldo atual            → ca.contas_financeiras.saldo_atual
+  - /v1/categorias          -> ca.categorias
+  - /v1/centros-de-custo    -> ca.centros_custo
+  - /v1/contas-financeiras  -> ca.contas_financeiras
+  - /v1/produto/busca       -> ca.produtos
+  - /v1/servicos            -> ca.servicos
+  - saldo atual             -> ca.contas_financeiras.saldo_atual
 """
 
 import logging
@@ -15,7 +16,7 @@ from typing import Any, Dict, List
 import psycopg2.extensions
 
 from etl.client import ContaAzulClient
-from etl.db import log_sync_end, log_sync_start, upsert
+from etl.db import log_sync_end, log_sync_start, upsert, ensure_connection
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ def sync_produtos(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    return _sync_endpoint(conn, client, "/produtos", "ca.produtos", _map_produto)
+    return _sync_endpoint(conn, client, "/produto/busca", "ca.produtos", _map_produto)
 
 
 def sync_saldo_contas(
@@ -181,19 +182,36 @@ def sync_saldo_contas(
             cur.execute("SELECT id FROM ca.contas_financeiras WHERE ativo = true")
             contas = [row[0] for row in cur.fetchall()]
 
+        if not contas:
+            log_sync_end(conn, log_id, 0, status="ok")
+            return 0
+
+        # Probe: testa a primeira conta com o endpoint correto /saldo-atual
+        primeiro_id = contas[0]
+        if not client.probe(f"/conta-financeira/{primeiro_id}/saldo-atual"):
+            logger.info("sync_saldo_contas: endpoint /saldo-atual nao disponivel (404) -- pulando.")
+            log_sync_end(conn, log_id, 0, status="ok")
+            return 0
+
         hoje = datetime.now(timezone.utc).date()
 
-        for conta_id in contas:
+        for i, conta_id in enumerate(contas):
+            # Garante conexao ativa a cada 10 requisicoes
+            if i % 10 == 0:
+                conn = ensure_connection(conn)
+
             try:
-                resp = client.get(f"/conta-financeira/{conta_id}/saldo")
+                resp = client.get(f"/conta-financeira/{conta_id}/saldo-atual")
                 saldo = None
 
                 if isinstance(resp, dict):
                     saldo = (
-                        resp.get("saldo")
+                        resp.get("saldo_atual")
+                        or resp.get("saldo")
                         or resp.get("balance")
-                        or resp.get("saldo_atual")
                         or resp.get("current_balance")
+                        or resp.get("currentBalance")
+                        or resp.get("saldo_disponivel")
                     )
 
                 if saldo is not None:
@@ -212,7 +230,7 @@ def sync_saldo_contas(
                     records += 1
                     logger.info(
                         "%-30s -> saldo R$ %.2f atualizado para conta %s",
-                        "/conta-financeira/{id}/saldo",
+                        "/conta-financeira/{id}/saldo-atual",
                         _float(saldo),
                         conta_id,
                     )
@@ -228,6 +246,61 @@ def sync_saldo_contas(
     except Exception as exc:
         conn.rollback()
         logger.error("Erro em sync_saldo_contas: %s", exc)
+        log_sync_end(conn, log_id, records, status="erro", error_msg=str(exc))
+
+    return records
+
+
+def sync_servicos(
+    conn: psycopg2.extensions.connection,
+    client: ContaAzulClient,
+) -> int:
+    """
+    Sincroniza servicos via GET /servicos -> ca.produtos.
+    Servicos e produtos compartilham a mesma tabela (ambos sao itens de venda).
+    """
+    return _sync_endpoint(conn, client, "/servicos", "ca.produtos", _map_produto)
+
+
+def sync_vendedores(
+    conn: psycopg2.extensions.connection,
+    client: ContaAzulClient,
+) -> int:
+    """
+    Sincroniza vendedores via GET /venda/vendedores -> ca.vendedores.
+    """
+    log_id  = log_sync_start(conn, "/venda/vendedores")
+    records = 0
+
+    try:
+        raw_list = client.get_all("/venda/vendedores")
+        mapped   = []
+
+        for raw in raw_list:
+            if not isinstance(raw, dict):
+                continue
+            row = {
+                "id":        _str(raw.get("id") or raw.get("uuid") or ""),
+                "nome":      _str(raw.get("nome") or raw.get("name") or ""),
+                "email":     _str(raw.get("email") or ""),
+                "ativo":     bool(raw.get("ativo") if raw.get("ativo") is not None else True),
+                "synced_at": datetime.now(timezone.utc),
+            }
+            if row["id"]:
+                mapped.append(row)
+
+        if mapped:
+            records = upsert(conn, "ca.vendedores", mapped, conflict_col="id")
+            conn.commit()
+            logger.info("[OK] %-30s -> %d registro(s) em ca.vendedores", "/venda/vendedores", records)
+        else:
+            logger.warning("Nenhum vendedor retornado de /venda/vendedores")
+
+        log_sync_end(conn, log_id, records, status="ok")
+
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Erro em sync_vendedores: %s", exc)
         log_sync_end(conn, log_id, records, status="erro", error_msg=str(exc))
 
     return records

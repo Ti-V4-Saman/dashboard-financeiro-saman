@@ -118,12 +118,16 @@ def sync_contratos(
     Sincroniza contratos e seus itens.
     Retorna total de contratos sincronizados.
     """
-    api_path = "/contrato"
+    api_path = "/contratos"
     log_id = log_sync_start(conn, api_path)
     records = 0
 
     try:
         params = _get_sync_params(mode)
+        if not client.probe(api_path):
+            logger.info("sync_contratos: endpoint /contratos indisponivel (404), pulando.")
+            log_sync_end(conn, log_id, 0, status="ok")
+            return 0
         raw_list = client.get_all(api_path, extra_params=params)
 
         contratos_mapped: List[Dict[str, Any]] = []
