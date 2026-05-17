@@ -36,6 +36,20 @@ def get_connection() -> psycopg2.extensions.connection:
         raise RuntimeError(f"Falha ao conectar ao PostgreSQL: {exc}") from exc
 
 
+def ensure_connection(conn: psycopg2.extensions.connection) -> psycopg2.extensions.connection:
+    """Verifica se a conexão ainda está ativa e retorna uma nova se estiver fechada."""
+    try:
+        if conn.closed == 0:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return conn
+    except Exception:
+        pass
+    
+    logger.warning("Conexão com banco perdida. Reconectando...")
+    return get_connection()
+
+
 # ── UPSERT genérico ───────────────────────────────────────────────────────────
 
 def upsert(

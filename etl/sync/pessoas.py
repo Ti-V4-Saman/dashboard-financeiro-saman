@@ -174,6 +174,37 @@ def sync_fornecedores(
     conn: psycopg2.extensions.connection,
     client: ContaAzulClient,
 ) -> int:
-    """Retorna 0 — já sincronizado junto com clientes via /pessoas."""
-    logger.info("[SKIP] fornecedores já sincronizados junto com clientes via /pessoas")
-    return 0
+    """
+    Sincroniza fornecedores via GET /pessoas?tipo_perfil=Fornecedor -> ca.pessoas.
+    Usa o mesmo mapper e tabela de clientes (ca.pessoas), com papel=FORNECEDOR.
+    """
+    log_id  = log_sync_start(conn, "/pessoas?tipo_perfil=Fornecedor")
+    records = 0
+
+    try:
+        raw_list = client.get_all("/pessoas", extra_params={"tipo_perfil": "Fornecedor"})
+        mapped: List[Dict[str, Any]] = []
+
+        for raw in raw_list:
+            if not isinstance(raw, dict):
+                continue
+            row = _map_pessoa(raw, "FORNECEDOR")
+            if not row["id"]:
+                continue
+            mapped.append(row)
+
+        if mapped:
+            records = upsert(conn, "ca.pessoas", mapped, conflict_col="id")
+            conn.commit()
+            logger.info("[OK] /pessoas?tipo_perfil=Fornecedor -> %d fornecedor(es) em ca.pessoas", records)
+        else:
+            logger.warning("Nenhum fornecedor retornado")
+
+        log_sync_end(conn, log_id, records, status="ok")
+
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Erro em sync_fornecedores: %s", exc)
+        log_sync_end(conn, log_id, records, status="erro", error_msg=str(exc))
+
+    return records

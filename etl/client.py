@@ -59,6 +59,21 @@ class ContaAzulClient:
                 resp = self._session.request(method, url, params=params, timeout=30)
                 elapsed = time.monotonic() - t0
 
+                # Token expirado (401) → renovar e tentar de novo
+                if resp.status_code == 401:
+                    logger.warning("Token expirado (401) em %s — tentando renovar...", path)
+                    from etl.auth import get_access_token
+                    try:
+                        new_token = get_access_token()
+                        self._token = new_token
+                        self._session.headers.update({"Authorization": f"Bearer {new_token}"})
+                        # Tenta novamente imediatamente com o novo token
+                        resp = self._session.request(method, url, params=params, timeout=30)
+                        logger.info("Token renovado com sucesso para %s", path)
+                    except Exception as auth_err:
+                        logger.error("Falha ao renovar token durante requisição: %s", auth_err)
+                        return resp # retorna o 401 original se falhar a renovação
+
                 # Rate-limit ou erro de servidor → retry com backoff
                 if resp.status_code in (429, 500, 502, 503, 504):
                     # Respeitar o cabeçalho Retry-After se presente
@@ -140,7 +155,42 @@ class ContaAzulClient:
         # Fallback: se retornou o que parece ser uma página cheia, tenta a próxima
         return items_returned > 0 and items_returned >= 10  # Bridge usa 10 como padrão
 
-    # ── Paginação automática ───────────────────────────────────────────────────
+    # ── Requisição simples (não paginada) ──────────────────────────────────────
+    
+    def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        """Busca um recurso único ou lista simples (sem paginação)."""
+        resp = self._request("GET", path, params=params)
+        
+        if resp.status_code == 404:
+            return None
+            
+        if not resp.ok:
+            raise RuntimeError(
+                f"Erro {resp.status_code} em {path}: {resp.text[:300]}"
+            )
+            
+        try:
+            return resp.json()
+        except Exception:
+            raise RuntimeError(f"JSON inválido em {path}: {resp.text[:200]}")
+
+    def probe(self, path: str, params: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Verifica rapidamente se um endpoint existe sem lancar excecao.
+        Retorna True se o endpoint respondeu com status != 404.
+        Retorna False para 404 ou qualquer erro de rede.
+        """
+        try:
+            resp = self._request("GET", path, params=params)
+            if resp.status_code == 404:
+                logger.info("Endpoint %s nao disponivel nesta organizacao (404).", path)
+                return False
+            return True
+        except Exception as e:
+            logger.debug("Erro ao fazer probe em %s: %s", path, e)
+            return False
+
+    # ── Paginacao automatica ──────────────────────────────────────────────────
 
     def get_all(
         self,
