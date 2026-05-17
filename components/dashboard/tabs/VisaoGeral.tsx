@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import {
   BarChart,
   Bar,
@@ -9,19 +9,25 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
 } from 'recharts'
-import type { Lancamento } from '@/lib/types'
+import type { Lancamento, Filters } from '@/lib/types'
 import { fR, fDt } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
+import { InsightsPeriodo } from '@/components/dashboard/InsightsPeriodo'
 
 interface Props {
   data: Lancamento[]
+  filters?: Filters
 }
 
-const COLORS = ['#1B55A3', '#14703F', '#D41F1F', '#8B5B0D', '#384858', '#888480', '#B52C2C', '#45433D', '#CCC9C1', '#E2DFD8']
+interface ExtrasResponse {
+  saldos: SaldosData
+  insights: {
+    ticketVariacao: { percentual: number; direcao: 'up' | 'down' | 'stable' } | null
+    burnVariacao:   { percentual: number; direcao: 'up' | 'down' | 'stable' } | null
+  }
+}
 
 function KpiCard({
   label,
@@ -69,39 +75,28 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
   )
 }
 
-export function VisaoGeral({ data }: Props) {
+export function VisaoGeral({ data, filters }: Props) {
+  // ── Dados já realizados (base para todos os gráficos existentes) ─────────
   const op = useMemo(() => data.filter(r => !r.isTransfer && r.situacao === 'Quitado'), [data])
 
   const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
     let rec = 0, desp = 0, atr = 0
     const hoje = new Date()
-    
-    // KPIs principais (apenas realizados)
     for (const r of op) {
       if (r.tipo === 'Receita') rec += r.valor
       else desp += r.valor
     }
-
-    // Atrasados (olhando para todos os dados, não apenas os 'op' filtrados por Quitado)
     for (const r of data) {
-      const s = r.situacao?.toLowerCase() || ''
-      if ((s.includes('atraso') || s.includes('aberto') || s.includes('pending')) && r.data && r.data < hoje) {
+      if ((r.situacao === 'Atrasado' || r.situacao === 'Aberto') && r.data && r.data < hoje) {
         atr += r.valor
       }
     }
-
     const res = rec - desp
-    return {
-      receita: rec,
-      despesa: desp,
-      resultado: res,
-      margem: rec > 0 ? (res / rec) * 100 : 0,
-      atrasados: atr,
-    }
+    return { receita: rec, despesa: desp, resultado: res, margem: rec > 0 ? (res / rec) * 100 : 0, atrasados: atr }
   }, [op, data])
 
   const semCat = useMemo(() => op.filter(r => !r.cat1 || r.cat1 === '(em branco)').length, [op])
-  const semCC = useMemo(() => op.filter(r => !r.cc1 || r.cc1 === '(em branco)').length, [op])
+  const semCC  = useMemo(() => op.filter(r => !r.cc1  || r.cc1  === '(em branco)').length, [op])
 
   // Daily data for bar chart
   const dailyData = useMemo(() => {
@@ -121,20 +116,6 @@ export function VisaoGeral({ data }: Props) {
     })
   }, [op])
 
-  // Donut - receitas por catSup
-  const receitaDonut = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Receita') continue
-      const key = r.catSup || r.cat1 || 'Outros'
-      map.set(key, (map.get(key) || 0) + r.valor)
-    }
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8)
-  }, [op])
-
   // Top 10 despesas por categoria
   const topDespCat = useMemo(() => {
     const map = new Map<string, number>()
@@ -148,7 +129,6 @@ export function VisaoGeral({ data }: Props) {
       .sort((a, b) => b.valor - a.valor)
       .slice(0, 10)
   }, [op])
-
   const maxDespCat = topDespCat[0]?.valor || 1
 
   // Top 10 CC
@@ -165,21 +145,37 @@ export function VisaoGeral({ data }: Props) {
       .sort((a, b) => b.valor - a.valor)
       .slice(0, 10)
   }, [op])
-
   const maxCC = topCC[0]?.valor || 1
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
-    if (Math.abs(v) >= 1_000) return `R$${(v / 1_000).toFixed(0)}K`
+    if (Math.abs(v) >= 1_000)     return `R$${(v / 1_000).toFixed(0)}K`
     return fR(v)
   }
 
+  // ── Fetch extras (saldos + variações) ─────────────────────────────────────
+  const [extras, setExtras]         = useState<ExtrasResponse | null>(null)
+  const [extrasLoading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const de     = filters?.dateFrom ?? ''
+    const ate    = filters?.dateTo   ?? ''
+    const regime = filters?.regime   ?? 'competencia'
+    const params = new URLSearchParams({ de, ate, regime }).toString()
+
+    setLoading(true)
+    fetch(`/api/visao-geral-extras?${params}`)
+      .then(r => r.json())
+      .then((d: ExtrasResponse) => { setExtras(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [filters?.dateFrom, filters?.dateTo, filters?.regime])
+
   return (
     <div className="space-y-4">
-      {/* KPI Row */}
+      {/* KPI Row — inalterado */}
       <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))' }}>
         <KpiCard label="Receita Bruta" value={fR(receita)} color="var(--green)" />
-        <KpiCard label="Despesas" value={fR(despesa)} color="var(--red)" />
+        <KpiCard label="Despesas"      value={fR(despesa)} color="var(--red)" />
         <KpiCard
           label="Resultado"
           value={fR(resultado)}
@@ -203,9 +199,10 @@ export function VisaoGeral({ data }: Props) {
         />
       </div>
 
-      {/* Charts row 1 */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: '7fr 5fr' }}>
-        {/* Daily bar chart */}
+      {/* Linha 1: Gráfico de barras + Insights (esq) | Saldos Bancários (dir) */}
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) 400px' }}>
+
+        {/* Card esquerdo: Receitas vs Despesas + InsightsPeriodo */}
         <Card>
           <CardHeader>
             <CardTitle>Receitas vs Despesas por Data</CardTitle>
@@ -239,60 +236,30 @@ export function VisaoGeral({ data }: Props) {
                   }}
                 />
                 <Legend wrapperStyle={{ fontSize: 10, color: 'var(--ink3)' }} />
-                <Bar dataKey="rec" name="Receita" fill="var(--green)" radius={[2, 2, 0, 0]} maxBarSize={18} />
-                <Bar dataKey="desp" name="Despesa" fill="var(--red)" radius={[2, 2, 0, 0]} maxBarSize={18} />
+                <Bar dataKey="rec"  name="Receita" fill="var(--green)" radius={[2, 2, 0, 0]} maxBarSize={18} />
+                <Bar dataKey="desp" name="Despesa" fill="var(--red)"   radius={[2, 2, 0, 0]} maxBarSize={18} />
               </BarChart>
             </ResponsiveContainer>
+
+            {/* InsightsPeriodo — renderizado dentro do mesmo card */}
+            <InsightsPeriodo
+              data={op}
+              dateFrom={filters?.dateFrom ?? ''}
+              dateTo={filters?.dateTo ?? ''}
+              extras={extras?.insights ?? null}
+            />
           </CardContent>
         </Card>
 
-        {/* Donut receitas */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Composição de Receitas</CardTitle>
-            <CardDescription>Por categoria superior</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie
-                  data={receitaDonut}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={55}
-                  outerRadius={85}
-                  paddingAngle={2}
-                  dataKey="value"
-                >
-                  {receitaDonut.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(v: number) => fR(v)}
-                  contentStyle={{
-                    border: '1px solid var(--line)',
-                    borderRadius: 6,
-                    background: 'var(--surface)',
-                    fontSize: 11,
-                  }}
-                />
-                <Legend
-                  layout="vertical"
-                  align="right"
-                  verticalAlign="middle"
-                  iconSize={8}
-                  wrapperStyle={{ fontSize: 10, color: 'var(--ink3)' }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        {/* Card direito: Saldos Bancários */}
+        <SaldosBancarios
+          data={extras?.saldos ?? null}
+          loading={extrasLoading}
+        />
       </div>
 
-      {/* Charts row 2 */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
-        {/* Top despesas */}
+      {/* Linha 2: Top 10 */}
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
         <Card>
           <CardHeader>
             <CardTitle>Top 10 Despesas por Categoria</CardTitle>
@@ -303,20 +270,13 @@ export function VisaoGeral({ data }: Props) {
             ) : (
               <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
                 {topDespCat.map(item => (
-                  <BarListItem
-                    key={item.nome}
-                    label={item.nome}
-                    value={item.valor}
-                    max={maxDespCat}
-                    color="var(--red)"
-                  />
+                  <BarListItem key={item.nome} label={item.nome} value={item.valor} max={maxDespCat} color="var(--red)" />
                 ))}
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Top CC */}
         <Card>
           <CardHeader>
             <CardTitle>Top 10 Centros de Custo (Despesas)</CardTitle>
@@ -327,13 +287,7 @@ export function VisaoGeral({ data }: Props) {
             ) : (
               <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
                 {topCC.map(item => (
-                  <BarListItem
-                    key={item.nome}
-                    label={item.nome}
-                    value={item.valor}
-                    max={maxCC}
-                    color="var(--blue)"
-                  />
+                  <BarListItem key={item.nome} label={item.nome} value={item.valor} max={maxCC} color="var(--blue)" />
                 ))}
               </div>
             )}

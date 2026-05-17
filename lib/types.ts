@@ -32,14 +32,26 @@ export interface Lancamento {
   _ccList: { nome: string; valor: number }[]
 }
 
+export type Regime      = 'competencia' | 'caixa'
+export type TipoPeriodo = 'mes' | 'trimestre' | 'ano' | 'personalizado'
+export type Atalho =
+  | 'este-mes' | 'mes-anterior' | 'este-trimestre' | 'este-ano'
+  | 'ultimos-30' | 'ultimos-12-meses' | 'todo-periodo' | 'personalizado'
+
 export interface Filters {
+  // ── Regime contábil ──────────────────────────────────────────────────────────
+  regime: Regime
+  // ── Período (gerenciado pelo PeriodNavigator) ─────────────────────────────────
+  tipoPeriodo: TipoPeriodo
+  atalho: Atalho
   dateFrom: string
   dateTo: string
-  categoria: string[]  // multi-select — lista de categorias selecionadas (vazia = todas)
-  cc: string[]         // multi-select — centros de custo selecionados   (vazia = todos)
-  tipo: string         // single: '' | 'Receita' | 'Despesa'
-  situacao: string[]   // multi-select — situações selecionadas          (vazia = todas)
-  conta: string[]      // multi-select — contas financeiras selecionadas (vazia = todas) — NOVO
+  // ── Filtros client-side ───────────────────────────────────────────────────────
+  categoria: string[]
+  cc: string[]
+  tipo: string         // '' | 'Receita' | 'Despesa'
+  situacao: string[]
+  conta: string[]
 }
 
 export interface Meta {

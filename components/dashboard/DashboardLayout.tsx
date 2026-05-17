@@ -20,7 +20,9 @@ interface DashboardLayoutProps {
   filteredData: Lancamento[]
   filters: Filters
   setFilters: (f: Filters) => void
+  clearAll: () => void
   isLoading: boolean
+  isRefetching: boolean
   refresh: () => void
   listaContas: string[]
 }
@@ -30,18 +32,28 @@ export function DashboardLayout({
   filteredData,
   filters,
   setFilters,
+  clearAll,
   isLoading,
+  isRefetching,
   refresh,
   listaContas,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
   const { data: session } = useSession()
-  const isAdmin = (session?.user as { isAdmin?: boolean })?.isAdmin === true
+  const isAdmin =
+    process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === 'true' ||
+    (session?.user as { isAdmin?: boolean })?.isAdmin === true
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
       <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
-      <FilterBar filters={filters} setFilters={setFilters} allData={allData} listaContas={listaContas} />
+      <FilterBar
+        filters={filters}
+        setFilters={setFilters}
+        clearAll={clearAll}
+        allData={allData}
+        listaContas={listaContas}
+      />
       <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} />
 
       <main className="px-6 py-5 w-full">
@@ -71,8 +83,16 @@ export function DashboardLayout({
             `}</style>
           </div>
         ) : (
-          <div className="animate-fadeIn">
-            {activeTab === 'visao'       && <VisaoGeral data={filteredData} />}
+          // Opacity sutil durante refetch server-side (troca de período / regime)
+          <div
+            className="animate-fadeIn"
+            style={{
+              opacity:    isRefetching ? 0.55 : 1,
+              transition: 'opacity 0.2s ease',
+              pointerEvents: isRefetching ? 'none' : 'auto',
+            }}
+          >
+            {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} />}

@@ -18,6 +18,19 @@ export function fDt(d: Date | null): string {
   return `${day}/${month}/${year}`
 }
 
+/**
+ * Deriva a hierarquia de 2 níveis a partir do prefixo numérico do cat1.
+ * "1.1.01 Aquisição | [Saber] BR" → { l1: "1 — Rec. Operacionais", l2: "1.1" }
+ * Categorias sem prefixo numérico (Aportes, Financiamentos…) → l2 = l1
+ */
+export function parseCatHier(cat1: string | null | undefined): { l1: string; l2: string } {
+  const name = (cat1 || '').trim()
+  const l1 = gM(name)
+  const m = name.match(/^(\d+)\.(\d+)\./)
+  const l2 = m ? `${m[1]}.${m[2]}` : l1
+  return { l1, l2 }
+}
+
 export function gM(cat: string): string {
   if (!cat) return 'Outros'
   const c = cat.trim()

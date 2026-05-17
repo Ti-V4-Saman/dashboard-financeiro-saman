@@ -224,14 +224,14 @@ export function Lancamentos({ data }: Props) {
                         <span
                           className="px-1.5 py-0.5 rounded text-[9px] font-semibold"
                           style={{
-                            background: r.situacao.toLowerCase().includes('atraso')
+                            background: r.situacao === 'Atrasado'
                               ? 'var(--red-l)'
-                              : r.situacao.toLowerCase().includes('baixad') || r.situacao.toLowerCase().includes('pago')
+                              : (r.situacao === 'Quitado' || r.situacao === 'Parcial')
                               ? 'var(--green-l)'
                               : 'var(--surf3)',
-                            color: r.situacao.toLowerCase().includes('atraso')
+                            color: r.situacao === 'Atrasado'
                               ? 'var(--red)'
-                              : r.situacao.toLowerCase().includes('baixad') || r.situacao.toLowerCase().includes('pago')
+                              : (r.situacao === 'Quitado' || r.situacao === 'Parcial')
                               ? 'var(--green)'
                               : 'var(--ink3)',
                           }}

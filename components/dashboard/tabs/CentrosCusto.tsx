@@ -127,14 +127,14 @@ export function CentrosCusto({ data }: Props) {
       </div>
 
       {/* Charts */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
         <Card>
           <CardHeader><CardTitle>Receitas por CC</CardTitle></CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={recByCC} layout="vertical" margin={{ left: 0, right: 16 }}>
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={90} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
                 <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
                 <Bar dataKey="value" name="Receita" fill="var(--green)" radius={[0, 3, 3, 0]} maxBarSize={16} />
               </BarChart>
@@ -148,7 +148,7 @@ export function CentrosCusto({ data }: Props) {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={despByCC} layout="vertical" margin={{ left: 0, right: 16 }}>
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={90} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
                 <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
                 <Bar dataKey="value" name="Despesa" fill="var(--red)" radius={[0, 3, 3, 0]} maxBarSize={16} />
               </BarChart>

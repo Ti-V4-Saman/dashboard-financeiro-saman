@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento } from '@/lib/types'
-import { fR, getMonths, mLbl } from '@/lib/utils'
+import { fR, getMonths, mLbl, parseCatHier } from '@/lib/utils'
 
 // ─── Visual config (mirrors DRE) ─────────────────────────────────────────────
 
@@ -127,8 +127,7 @@ export function Comparativo({ data, allData }: Props) {
     const buildMap = (rows: Lancamento[]) => {
       const m = new Map<string, Map<string, Map<string, number>>>()
       for (const r of rows) {
-        const l1   = r.catSup1 || 'Outros'
-        const l2   = r.catSup  || l1
+        const { l1, l2 } = parseCatHier(r.cat1)
         const l3   = r.cat1    || l2
         const sign = r.tipo === 'Receita' ? 1 : -1
         if (!m.has(l1)) m.set(l1, new Map())

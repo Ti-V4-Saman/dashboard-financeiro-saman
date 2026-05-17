@@ -35,7 +35,7 @@ export function Qualidade({ data }: Props) {
   const semCC = useMemo(() => op.filter(r => !r.cc1 || r.cc1 === '(em branco)'), [op])
   const hoje = new Date()
   const atrasados = useMemo(
-    () => op.filter(r => r.situacao?.toLowerCase().includes('atraso') && r.data && r.data < hoje),
+    () => op.filter(r => r.situacao === 'Atrasado' && r.data && r.data < hoje),
     [op]
   )
 

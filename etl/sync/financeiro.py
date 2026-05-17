@@ -26,16 +26,17 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+FULL_SYNC_START = "2024-12-31"  # data inicial do histórico completo
+
 def _get_sync_params(mode: str = "incremental", style: str = "finance") -> Dict[str, str]:
     today = date.today()
-    year_end = date(today.year, 12, 31)
 
     if mode == "full":
-        start_date = "2015-01-01"
+        start_date = FULL_SYNC_START
+        end_date   = today.strftime("%Y-%m-%d")
     else:
         start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
-
-    end_date = year_end.strftime("%Y-%m-%d")
+        end_date   = today.strftime("%Y-%m-%d")
 
     if style == "sales":
         return {"data_inicio": start_date, "data_fim": end_date}
@@ -120,6 +121,7 @@ def _map_conta_receber(raw: Dict[str, Any]) -> Dict[str, Any]:
         "observacao":          _str(raw.get("observacao") or ""),
         "id_venda":            _str(raw.get("id_venda")) or None,
         "data_recebimento":    _str(raw.get("data_recebimento") or raw.get("data_pagamento") or "") or None,
+        "origem":              _str(raw.get("origem") or raw.get("origin") or "") or None,
         "rateio":              rateio,
         "synced_at":           datetime.now(timezone.utc),
     }
@@ -158,6 +160,7 @@ def _map_conta_pagar(raw: Dict[str, Any]) -> Dict[str, Any]:
         "numero_documento":    _str(raw.get("numero_documento") or ""),
         "observacao":          _str(raw.get("observacao") or ""),
         "data_pagamento":      _str(raw.get("data_pagamento") or "") or None,
+        "origem":              _str(raw.get("origem") or raw.get("origin") or "") or None,
         "rateio":              rateio,
         "synced_at":           datetime.now(timezone.utc),
     }
@@ -515,14 +518,13 @@ def sync_transferencias(
     records = 0
 
     try:
-        today    = date.today()
-        year_end = date(today.year, 12, 31)
+        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
+            start_date = FULL_SYNC_START
         else:
             start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        params   = {"data_inicio": start_date, "data_fim": year_end.strftime("%Y-%m-%d")}
+        params   = {"data_inicio": start_date, "data_fim": today.strftime("%Y-%m-%d")}
         raw_list = client.get_all("/financeiro/transferencias", extra_params=params)
         mapped: List[Dict[str, Any]] = []
 
@@ -559,14 +561,13 @@ def sync_baixas(
     records = 0
 
     try:
-        today    = date.today()
-        year_end = date(today.year, 12, 31)
+        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
+            start_date = FULL_SYNC_START
         else:
             start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        params   = {"data_de": start_date, "data_ate": year_end.strftime("%Y-%m-%d")}
+        params   = {"data_de": start_date, "data_ate": today.strftime("%Y-%m-%d")}
         raw_list = client.get_all("/financeiro/baixas", extra_params=params)
         mapped: List[Dict[str, Any]] = []
 
@@ -606,10 +607,9 @@ def sync_itens_venda(
     records = 0
 
     try:
-        today    = date.today()
-        year_end = date(today.year, 12, 31)
+        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
+            start_date = FULL_SYNC_START
         else:
             start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
 
@@ -619,7 +619,7 @@ def sync_itens_venda(
                 SELECT id FROM ca.vendas
                 WHERE data_emissao BETWEEN %s AND %s
                 """,
-                (start_date, year_end.strftime("%Y-%m-%d")),
+                (start_date, today.strftime("%Y-%m-%d")),
             )
             venda_ids = [row[0] for row in cur.fetchall()]
 
@@ -664,14 +664,13 @@ def sync_notas_fiscais(
     records = 0
 
     try:
-        today    = date.today()
-        year_end = date(today.year, 12, 31)
+        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
+            start_date = FULL_SYNC_START
         else:
             start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        params   = {"data_emissao_de": start_date, "data_emissao_ate": year_end.strftime("%Y-%m-%d")}
+        params   = {"data_emissao_de": start_date, "data_emissao_ate": today.strftime("%Y-%m-%d")}
         raw_list = client.get_all("/nota-fiscal", extra_params=params)
         mapped: List[Dict[str, Any]] = []
 

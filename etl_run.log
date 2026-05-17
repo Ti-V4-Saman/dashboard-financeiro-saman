@@ -1,44 +1,4 @@
-2026-04-27 19:00:06 [INFO] etl.main -- ============================================================
-2026-04-27 19:00:06 [INFO] etl.main -- INÍCIO DO ETL (INCREMENTAL) — 2026-04-27 22:00:06 UTC
-2026-04-27 19:00:06 [INFO] etl.main -- ============================================================
-2026-04-27 19:00:08 [INFO] etl.auth -- Novo refresh token salvo no banco de dados.
-2026-04-27 19:00:08 [INFO] etl.auth -- Token renovado (expira em 60min)
-2026-04-27 19:00:09 [INFO] etl.client -- [OK] /categorias?tipo=RECEITA            -> 36 registro(s)
-2026-04-27 19:00:09 [INFO] etl.sync.cadastros -- /categorias?tipo=RECEITA       -> 36 registro(s) em ca.categorias
-2026-04-27 19:00:11 [INFO] etl.client -- [OK] /categorias?tipo=DESPESA            -> 112 registro(s)
-2026-04-27 19:00:11 [INFO] etl.sync.cadastros -- /categorias?tipo=DESPESA       -> 112 registro(s) em ca.categorias
-2026-04-27 19:00:12 [INFO] etl.client -- [OK] /centro-de-custo                    -> 18 registro(s)
-2026-04-27 19:00:12 [INFO] etl.sync.cadastros -- /centro-de-custo               -> 18 registro(s) em ca.centros_custo
-2026-04-27 19:00:13 [INFO] etl.client -- [OK] /conta-financeira                   -> 13 registro(s)
-2026-04-27 19:00:13 [INFO] etl.sync.cadastros -- /conta-financeira              -> 13 registro(s) em ca.contas_financeiras
-2026-04-27 19:00:14 [INFO] etl.client -- [OK] /produtos                           -> 0 registro(s)
-2026-04-27 19:00:14 [WARNING] etl.sync.cadastros -- Nenhum registro válido retornado de /produtos
-2026-04-27 19:00:24 [INFO] etl.client -- [OK] /pessoas                            -> 1479 registro(s)
-2026-04-27 19:00:24 [INFO] etl.sync.pessoas -- [OK] /pessoas -> 1479 pessoa(s) em ca.pessoas
-2026-04-27 19:00:24 [INFO] etl.sync.pessoas -- [SKIP] fornecedores jah sincronizados junto com clientes via /pessoas
-2026-04-27 19:00:29 [INFO] etl.client -- [OK] /financeiro/eventos-financeiros/contas-a-receber/buscar -> 659 registro(s)
-2026-04-27 19:00:30 [INFO] etl.sync.financeiro -- Sincronizadas 7 categorias 'fantasmas' de /financeiro/eventos-financeiros/contas-a-receber/buscar
-2026-04-27 19:00:30 [INFO] etl.sync.financeiro -- /financeiro/eventos-financeiros/contas-a-receber/buscar -> 659 registro(s) em ca.contas_receber
-2026-04-27 19:00:37 [INFO] etl.client -- [OK] /financeiro/eventos-financeiros/contas-a-pagar/buscar -> 783 registro(s)
-2026-04-27 19:00:37 [INFO] etl.sync.financeiro -- Sincronizadas 39 categorias 'fantasmas' de /financeiro/eventos-financeiros/contas-a-pagar/buscar
-2026-04-27 19:00:38 [INFO] etl.sync.financeiro -- /financeiro/eventos-financeiros/contas-a-pagar/buscar -> 783 registro(s) em ca.contas_pagar
-2026-04-27 19:00:42 [INFO] etl.client -- [OK] /venda/busca                        -> 475 registro(s)
-2026-04-27 19:00:42 [INFO] etl.sync.financeiro -- /venda/busca                   -> 475 registro(s) em ca.vendas
-2026-04-27 19:00:42 [INFO] etl.main -- 
-2026-04-27 19:00:42 [INFO] etl.main -- ------------------------------------------------------------
-2026-04-27 19:00:42 [INFO] etl.main --   RESUMO DO ETL
-2026-04-27 19:00:42 [INFO] etl.main -- ------------------------------------------------------------
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  categorias                148 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  centros_custo             18 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  contas_financeiras        13 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  produtos                  0 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  clientes                  1479 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  fornecedores              0 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  contas_receber            659 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  contas_pagar              783 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main --   [OK]  vendas                    475 registro(s)
-2026-04-27 19:00:42 [INFO] etl.main -- ------------------------------------------------------------
-2026-04-27 19:00:42 [INFO] etl.main --   Total de registros sincronizados: 3575
-2026-04-27 19:00:42 [INFO] etl.main --   Duracao: 36.3s
-2026-04-27 19:00:42 [INFO] etl.main --   Status:  SUCESSO
-2026-04-27 19:00:42 [INFO] etl.main -- ------------------------------------------------------------
+2026-05-15 19:40:57 [INFO] etl.main -- ============================================================
+2026-05-15 19:40:57 [INFO] etl.main -- INÍCIO DO ETL (FULL) — 2026-05-15 22:40:57 UTC
+2026-05-15 19:40:57 [INFO] etl.main -- ============================================================
+2026-05-15 19:40:58 [CRITICAL] etl.main -- Falha fatal na autenticação: Falha na autenticação ContaAzul (HTTP 400): {"error":"invalid_grant"}

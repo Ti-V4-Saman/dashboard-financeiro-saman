@@ -42,16 +42,17 @@ def _id(obj: Any) -> Optional[str]:
     return _str(v) or None
 
 
+FULL_SYNC_START = "2024-12-31"
+
 def _get_sync_params(mode: str = "incremental") -> Dict[str, str]:
     today = date.today()
-    year_end = date(today.year, 12, 31)
     if mode == "full":
-        start_date = "2015-01-01"
+        start_date = FULL_SYNC_START
     else:
         start_date = (today - timedelta(days=60)).strftime("%Y-%m-%d")
     return {
         "data_inicio": start_date,
-        "data_fim":    year_end.strftime("%Y-%m-%d"),
+        "data_fim":    today.strftime("%Y-%m-%d"),
     }
 
 
