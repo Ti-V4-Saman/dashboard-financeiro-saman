@@ -15,6 +15,7 @@ import { fR, fDt } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
 import { InsightsPeriodo } from '@/components/dashboard/InsightsPeriodo'
+import { BlocosResumo, type BlocosData } from '@/components/dashboard/BlocosResumo'
 
 interface Props {
   data: Lancamento[]
@@ -27,6 +28,7 @@ interface ExtrasResponse {
     ticketVariacao: { percentual: number; direcao: 'up' | 'down' | 'stable' } | null
     burnVariacao:   { percentual: number; direcao: 'up' | 'down' | 'stable' } | null
   }
+  blocos: BlocosData
 }
 
 function KpiCard({
@@ -258,7 +260,10 @@ export function VisaoGeral({ data, filters }: Props) {
         />
       </div>
 
-      {/* Linha 2: Top 10 */}
+      {/* Linha 2: 3 blocos de resumo */}
+      <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
+
+      {/* Linha 3: Top 10 */}
       <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
         <Card>
           <CardHeader>

@@ -12,6 +12,43 @@ import { Pool } from 'pg'
 
 export const dynamic = 'force-dynamic'
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ValorPct { valor: number; pct: number }
+
+interface IndicadoresData {
+  receitaLiquida:  number
+  mgOperacional:   ValorPct
+  mgContribuicao:  ValorPct
+  ebitda:          ValorPct
+  csp:             ValorPct
+  comercial:       ValorPct
+  administrativa:  ValorPct
+  gerais:          ValorPct
+}
+
+interface ContratosData {
+  ativos:            number
+  receitaRecorrente: number
+  ticketMedio:       number
+  aVencer30:         number
+  vencidosAtivos:    number
+  inativos:          number
+  semCC:             number
+}
+
+interface NotasData {
+  emitidas:          number
+  lancamentosReceita:number
+  coberturaPct:      number
+  qtdSemNota:        number
+  valorFaturado:     number
+  canceladasFalha:   number
+  detalheCancel:     string
+  pagoSemNotaQtd:    number
+  pagoSemNotaValor:  number
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -159,6 +196,203 @@ export async function GET(request: Request) {
         burnVariacao = variacao(curBurn, prevBurn)
       }
 
+      // ── 4. Blocos de resumo ───────────────────────────────────────────────
+      let blocos: {
+        indicadores: IndicadoresData | null
+        contratos:   ContratosData   | null
+        notas:       NotasData       | null
+      } = { indicadores: null, contratos: null, notas: null }
+
+      // 4a. Indicadores (DRE resumida do período)
+      if (de && ate) {
+        try {
+          const recDateExpr = regime === 'caixa' ? 'data_recebimento'                       : 'COALESCE(data_competencia, data_vencimento)'
+          const pagDateExpr = regime === 'caixa' ? 'data_pagamento'                         : 'COALESCE(data_competencia, data_vencimento)'
+          const recWhere    = regime === 'caixa'
+            ? `status = 'Quitado' AND status NOT IN ('Cancelado','Renegociado') AND data_recebimento BETWEEN $1 AND $2`
+            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
+          const pagWhere    = regime === 'caixa'
+            ? `status = 'Quitado' AND status NOT IN ('Cancelado','Renegociado') AND data_pagamento BETWEEN $1 AND $2`
+            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
+
+          const indRes = await client.query<{ tipo: string; cat_nome: string; valor: string }>(`
+            SELECT
+              t.tipo,
+              COALESCE(cat.nome, '') AS cat_nome,
+              COALESCE(SUM(COALESCE(t.valor_pago, t.total)), 0)::numeric AS valor
+            FROM (
+              SELECT 'Receita' AS tipo, categoria_id, total, valor_pago, origem,
+                     ${recDateExpr} AS data
+              FROM ca.contas_receber
+              WHERE ${recWhere}
+              UNION ALL
+              SELECT 'Despesa', categoria_id, total, valor_pago, origem,
+                     ${pagDateExpr} AS data
+              FROM ca.contas_pagar
+              WHERE ${pagWhere}
+            ) t
+            LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
+            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            GROUP BY t.tipo, cat.nome
+          `, [de, ate])
+
+          // numPrefix — extracts leading numeric prefix (e.g. "4.1.01 Foo" → 4.1)
+          const numPfx = (s: string): number => {
+            const m = s.match(/^(\d+(?:\.\d+)?)/)
+            return m ? Number(m[1]) : 999
+          }
+
+          const catRows = indRes.rows.map(r => ({
+            tipo:     r.tipo,
+            cat_nome: r.cat_nome,
+            valor:    Number(r.valor),
+          }))
+
+          // Signed accumulator mirroring DRE groupSum
+          const groupSum = (maxP: number) =>
+            catRows.reduce((s, r) => {
+              if (numPfx(r.cat_nome) <= maxP)
+                return s + (r.tipo === 'Receita' ? r.valor : -r.valor)
+              return s
+            }, 0)
+
+          // Absolute sum for a category band (Despesa only)
+          const despBand = (pfxMin: number, pfxMax: number) =>
+            catRows
+              .filter(r => r.tipo === 'Despesa' && numPfx(r.cat_nome) >= pfxMin && numPfx(r.cat_nome) < pfxMax)
+              .reduce((s, r) => s + r.valor, 0)
+
+          const recLiq      = groupSum(2.99)
+          const lubruto     = groupSum(3.99)
+          const ebitda      = groupSum(4.99)
+          const cspAbs      = despBand(3, 4)
+          const comercialAbs= despBand(4.1, 4.2)
+          const adminAbs    = despBand(4.2, 4.3)
+          const geraisAbs   = despBand(4.3, 4.4)
+          const margContrib = lubruto - comercialAbs
+
+          const pct = (v: number) => recLiq > 0 ? Math.round(v / recLiq * 1000) / 10 : 0
+          const vp  = (v: number) => ({ valor: Math.round(v * 100) / 100, pct: pct(v) })
+
+          blocos.indicadores = {
+            receitaLiquida: Math.round(recLiq * 100) / 100,
+            mgOperacional:  vp(lubruto),
+            mgContribuicao: vp(margContrib),
+            ebitda:         vp(ebitda),
+            csp:            vp(cspAbs),
+            comercial:      vp(comercialAbs),
+            administrativa: vp(adminAbs),
+            gerais:         vp(geraisAbs),
+          }
+        } catch (e) {
+          console.error('[blocos/indicadores]', e)
+        }
+      }
+
+      // 4b. Contratos (fotografia atual — independe do filtro)
+      try {
+        const ctrRes = await client.query<{
+          ativos: string; receita_recorrente: string
+          a_vencer_30: string; vencidos_ativos: string
+          inativos: string; sem_cc: string
+        }>(`
+          SELECT
+            COUNT(*) FILTER (WHERE status = 'ATIVO')                                                          AS ativos,
+            COALESCE(SUM(valor_total) FILTER (WHERE status = 'ATIVO'), 0)                                     AS receita_recorrente,
+            COUNT(*) FILTER (WHERE status = 'ATIVO'
+              AND data_fim BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days')                        AS a_vencer_30,
+            COUNT(*) FILTER (WHERE status = 'ATIVO' AND data_fim < CURRENT_DATE)                              AS vencidos_ativos,
+            COUNT(*) FILTER (WHERE status = 'INATIVO')                                                        AS inativos,
+            COUNT(*) FILTER (WHERE centro_custo_id IS NULL)                                                   AS sem_cc
+          FROM ca.contratos
+        `)
+        const cr = ctrRes.rows[0]
+        const ativos = Number(cr.ativos)
+        const recRec = Number(cr.receita_recorrente)
+        blocos.contratos = {
+          ativos,
+          receitaRecorrente: Math.round(recRec * 100) / 100,
+          ticketMedio:       ativos > 0 ? Math.round(recRec / ativos * 100) / 100 : 0,
+          aVencer30:         Number(cr.a_vencer_30),
+          vencidosAtivos:    Number(cr.vencidos_ativos),
+          inativos:          Number(cr.inativos),
+          semCC:             Number(cr.sem_cc),
+        }
+      } catch (e) {
+        console.error('[blocos/contratos]', e)
+      }
+
+      // 4c. Notas Fiscais (respeita período)
+      if (de && ate) {
+        try {
+          const recDateExpr = regime === 'caixa'
+            ? 'data_recebimento'
+            : 'COALESCE(data_competencia, data_vencimento)'
+          const recWhere = regime === 'caixa'
+            ? `status = 'Quitado' AND data_recebimento BETWEEN $1 AND $2`
+            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
+
+          const [nfRes, crRes, semNotaRes] = await Promise.all([
+            // Notas emitidas + canceladas no período
+            client.query<{ emitidas: string; valor_faturado: string; canceladas_falha: string; detalhe: string }>(`
+              SELECT
+                COUNT(*) FILTER (WHERE status = 'EMITIDA')                                                    AS emitidas,
+                COALESCE(SUM(COALESCE(valor_total, 0)) FILTER (WHERE status = 'EMITIDA'), 0)                  AS valor_faturado,
+                COUNT(*) FILTER (WHERE status IN ('CANCELADA','CANCELAMENTO_MANUAL','FALHA'))                  AS canceladas_falha,
+                CONCAT_WS(' · ',
+                  NULLIF(COUNT(*) FILTER (WHERE status IN ('CANCELADA','CANCELAMENTO_MANUAL'))::text || ' cancel', '0 cancel'),
+                  NULLIF(COUNT(*) FILTER (WHERE status = 'FALHA')::text || ' falha', '0 falha')
+                )                                                                                              AS detalhe
+              FROM ca.notas_fiscais
+              WHERE data_emissao BETWEEN $1 AND $2
+            `, [de, ate]),
+
+            // Lançamentos receita no período
+            client.query<{ total: string }>(`
+              SELECT COUNT(*) AS total
+              FROM ca.contas_receber
+              WHERE ${recWhere}
+                AND origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            `, [de, ate]),
+
+            // Pago sem nota (receita quitada sem NF vinculada)
+            client.query<{ qtd: string; valor: string }>(`
+              SELECT
+                COUNT(*)                                                AS qtd,
+                COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)    AS valor
+              FROM ca.contas_receber cr
+              WHERE cr.status = 'Quitado'
+                AND cr.${regime === 'caixa' ? 'data_recebimento' : 'COALESCE(data_competencia, data_vencimento)'} BETWEEN $1 AND $2
+                AND cr.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+                AND NOT EXISTS (
+                  SELECT 1 FROM ca.notas_fiscais nf
+                  WHERE nf.venda_id = cr.id_venda
+                    AND nf.status = 'EMITIDA'
+                )
+            `, [de, ate]),
+          ])
+
+          const nfRow = nfRes.rows[0]
+          const lancRec = Number(crRes.rows[0].total)
+          const emitidas = Number(nfRow.emitidas)
+          const coberturaPct = lancRec > 0 ? Math.round(emitidas / lancRec * 100) : 100
+
+          blocos.notas = {
+            emitidas,
+            lancamentosReceita: lancRec,
+            coberturaPct,
+            qtdSemNota:         lancRec - emitidas > 0 ? lancRec - emitidas : 0,
+            valorFaturado:      Math.round(Number(nfRow.valor_faturado) * 100) / 100,
+            canceladasFalha:    Number(nfRow.canceladas_falha),
+            detalheCancel:      nfRow.detalhe || '',
+            pagoSemNotaQtd:     Number(semNotaRes.rows[0].qtd),
+            pagoSemNotaValor:   Math.round(Number(semNotaRes.rows[0].valor) * 100) / 100,
+          }
+        } catch (e) {
+          console.error('[blocos/notas]', e)
+        }
+      }
+
       // ── Resposta ──────────────────────────────────────────────────────────
       const contas = contasRes.rows.map(r => ({
         id:   r.id,
@@ -180,6 +414,7 @@ export async function GET(request: Request) {
           ticketVariacao,
           burnVariacao,
         },
+        blocos,
       })
     } finally {
       client.release()
