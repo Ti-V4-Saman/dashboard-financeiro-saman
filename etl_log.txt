@@ -1,0 +1,4 @@
+2026-05-17 13:11:41 [INFO] etl.main -- ============================================================
+2026-05-17 13:11:41 [INFO] etl.main -- INÍCIO DO ETL (FULL) — 2026-05-17 16:11:41 UTC
+2026-05-17 13:11:41 [INFO] etl.main -- ============================================================
+2026-05-17 13:11:42 [CRITICAL] etl.main -- Falha fatal na autenticação: Falha na autenticação ContaAzul (HTTP 400): {"error":"invalid_grant"}
