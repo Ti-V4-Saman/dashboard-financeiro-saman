@@ -281,24 +281,26 @@ def _map_transferencia(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _map_baixa(raw: Dict[str, Any]) -> Dict[str, Any]:
-    # ===== DEBUG TEMPORÁRIO - REMOVER APÓS DIAGNÓSTICO =====
-    import json as _json
-    if not getattr(_map_baixa, "_debug_logged", False):
-        logger.info(
-            "DEBUG RAW BAIXA (estrutura completa da primeira baixa):\n%s",
-            _json.dumps(raw, indent=2, ensure_ascii=False, default=str)[:3000],
-        )
-        _map_baixa._debug_logged = True  # type: ignore[attr-defined]
-    # ===== FIM DEBUG TEMPORÁRIO =====
+    comp       = raw.get("valor_composicao") or {}
+    conta_fin  = raw.get("conta_financeira") or {}
+    if isinstance(conta_fin, str):
+        conta_fin = {"id": conta_fin}
 
     return {
         "id":                  _str(raw.get("id") or raw.get("uuid") or ""),
-        "tipo":                _str(raw.get("tipo") or raw.get("type") or "") or None,
+        # evento_id: mantido exatamente como estava — vincula baixa com contas_receber/pagar
         "evento_id":           _id(raw.get("evento") or raw.get("evento_id") or raw.get("event_id")),
+        "tipo":                _str(raw.get("tipo_evento_financeiro") or raw.get("tipo") or "") or None,
         "data_pagamento":      _str(raw.get("data_pagamento") or raw.get("payment_date") or "") or None,
-        "valor":               _float(raw.get("valor") or raw.get("value") or 0),
-        "conta_financeira_id": _id(raw.get("conta_financeira") or raw.get("financial_account")),
-        "forma_pagamento":     _str(raw.get("forma_pagamento") or raw.get("payment_method") or "") or None,
+        # valor_composicao — objeto aninhado com a decomposição do pagamento
+        "valor":               _float(comp.get("valor_liquido") or 0),
+        "valor_bruto":         _float(comp.get("valor_bruto")   or 0),
+        "taxa":                _float(comp.get("taxa")           or 0),
+        "desconto":            _float(comp.get("desconto")       or 0),
+        "juros":               _float(comp.get("juros")          or 0),
+        "multa":               _float(comp.get("multa")          or 0),
+        "conta_financeira_id": _str(conta_fin.get("id")) or None,
+        "forma_pagamento":     _str(raw.get("metodo_pagamento") or raw.get("forma_pagamento") or "") or None,
         "observacao":          _str(raw.get("observacao") or raw.get("notes") or "") or None,
         "data_criacao":        _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
         "synced_at":           datetime.now(timezone.utc),
