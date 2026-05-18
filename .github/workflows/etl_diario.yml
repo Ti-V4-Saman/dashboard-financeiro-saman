@@ -1,9 +1,12 @@
 name: ETL Diário — ContaAzul → PostgreSQL
 
 on:
-  schedule:
-    # 09:00 UTC = 06:00 Brasília (BRT = UTC-3)
-    - cron: "0 9 * * *"
+  # schedule DESATIVADO — workflow redundante com sync.yml (causava
+  # disputa pelo refresh token rotativo / invalid_grant).
+  # Mantido apenas como disparo manual de emergência.
+  #
+  # schedule:
+  #   - cron: "0 9 * * *"
   workflow_dispatch:
     # Permite execução manual pelo GitHub UI
 

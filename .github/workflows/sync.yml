@@ -2,18 +2,26 @@ name: Sync ContaAzul Data
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Executa a cada 15 minutos
-  workflow_dispatch:        # Permite rodar manualmente pelo botão no GitHub
+    - cron: '0 * * * *'   # De hora em hora (ETL dura ~44min)
+  workflow_dispatch:       # Permite rodar manualmente pelo botão no GitHub
+
+# Impede execuções paralelas: se uma já está rodando, a próxima espera.
+# Elimina a disputa pelo refresh token rotativo do Conta Azul.
+concurrency:
+  group: etl-contaazul
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 60     # ETL dura ~44min; margem de segurança
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
