@@ -281,6 +281,16 @@ def _map_transferencia(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _map_baixa(raw: Dict[str, Any]) -> Dict[str, Any]:
+    # ===== DEBUG TEMPORÁRIO - REMOVER APÓS DIAGNÓSTICO =====
+    import json as _json
+    if not getattr(_map_baixa, "_debug_logged", False):
+        logger.info(
+            "DEBUG RAW BAIXA (estrutura completa da primeira baixa):\n%s",
+            _json.dumps(raw, indent=2, ensure_ascii=False, default=str)[:3000],
+        )
+        _map_baixa._debug_logged = True  # type: ignore[attr-defined]
+    # ===== FIM DEBUG TEMPORÁRIO =====
+
     return {
         "id":                  _str(raw.get("id") or raw.get("uuid") or ""),
         "tipo":                _str(raw.get("tipo") or raw.get("type") or "") or None,

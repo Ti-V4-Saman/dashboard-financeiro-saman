@@ -54,6 +54,7 @@ from etl.sync.financeiro import (
     sync_notas_fiscais,         # NOVO
 )
 from etl.sync.contratos import sync_contratos  # NOVO
+from etl.sync.pos_processamento import executar_pos_processamento
 
 
 # ── Resultado de cada sync ────────────────────────────────────────────────────
@@ -160,13 +161,23 @@ def run(full_sync: bool = False) -> bool:
         _run_safe(r, fn, current_conn, client, *extra)
         results.append(r)
 
-    # ── 5. Fechar conexão ─────────────────────────────────────────────────────
+    # ── 5. Pós-processamento (campos derivados) ───────────────────────────────
+    # Roda DEPOIS de todos os syncs (depende de sync_baixas e sync_vendas).
+    # Falha aqui NÃO aborta o ETL — o sync principal já terminou com sucesso.
+    logger.info("Executando pós-processamento (campos derivados)...")
+    try:
+        current_conn = _get_active_conn(current_conn)
+        executar_pos_processamento(current_conn)
+    except Exception as exc:
+        logger.error("Pós-processamento falhou (não fatal): %s", exc)
+
+    # ── 6. Fechar conexão ─────────────────────────────────────────────────────
     try:
         current_conn.close()
     except Exception:
         pass
 
-    # ── 6. Resumo final ───────────────────────────────────────────────────────
+    # ── 7. Resumo final ───────────────────────────────────────────────────────
     finished_at   = datetime.now(timezone.utc)
     duration_s    = (finished_at - started_at).total_seconds()
     all_ok        = all(r.ok for r in results)
