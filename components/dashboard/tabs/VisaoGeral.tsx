@@ -7,7 +7,6 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
@@ -202,13 +201,28 @@ export function VisaoGeral({ data, filters }: Props) {
       </div>
 
       {/* Linha 1: Gráfico de barras + Insights (esq) | Saldos Bancários (dir) */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) 400px' }}>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) 400px', alignItems: 'start' }}>
 
         {/* Card esquerdo: Receitas vs Despesas + InsightsPeriodo */}
         <Card>
           <CardHeader>
-            <CardTitle>Receitas vs Despesas por Data</CardTitle>
-            <CardDescription>Movimentação diária</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Receitas vs Despesas por Data</CardTitle>
+                <CardDescription>Movimentação diária</CardDescription>
+              </div>
+              {/* Legenda inline */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <span className="flex items-center gap-1.5 text-[10px] font-medium" style={{ color: 'var(--ink3)' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--green)', display: 'inline-block' }} />
+                  Receita
+                </span>
+                <span className="flex items-center gap-1.5 text-[10px] font-medium" style={{ color: 'var(--ink3)' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--red)', display: 'inline-block' }} />
+                  Despesa
+                </span>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={220}>
@@ -237,7 +251,6 @@ export function VisaoGeral({ data, filters }: Props) {
                     fontSize: 11,
                   }}
                 />
-                <Legend wrapperStyle={{ fontSize: 10, color: 'var(--ink3)' }} />
                 <Bar dataKey="rec"  name="Receita" fill="var(--green)" radius={[2, 2, 0, 0]} maxBarSize={18} />
                 <Bar dataKey="desp" name="Despesa" fill="var(--red)"   radius={[2, 2, 0, 0]} maxBarSize={18} />
               </BarChart>

@@ -31,6 +31,34 @@ export function parseCatHier(cat1: string | null | undefined): { l1: string; l2:
   return { l1, l2 }
 }
 
+/** Mapa de rótulos descritivos para cada sub-grupo L2 da hierarquia de categorias. */
+const L2_LABELS: Record<string, string> = {
+  '1.1': '1.1 — Aquisição',
+  '1.2': '1.2 — Renovação',
+  '1.3': '1.3 — Expansão',
+  '1.4': '1.4 — Variáveis',
+  '2.1': '2.1 — Impostos s/ Fat.',
+  '2.2': '2.2 — Tarifas',
+  '2.3': '2.3 — Royalties',
+  '3.1': '3.1 — Mão de Obra CSP',
+  '3.2': '3.2 — ISAAS',
+  '3.3': '3.3 — Terceirizados',
+  '4.1': '4.1 — Comerciais',
+  '4.2': '4.2 — Administrativas',
+  '4.3': '4.3 — Gerais',
+  '5.1': '5.1 — Depreciação',
+  '5.2': '5.2 — Amortização',
+  '6.1': '6.1 — Rec. Financeira',
+  '6.2': '6.2 — Desp. Financeira',
+  '7.1': '7.1 — CSLL',
+  '7.2': '7.2 — IRPJ',
+}
+
+/** Retorna o rótulo descritivo de um sub-grupo L2 (ex: "1.1" → "1.1 — Aquisição"). */
+export function getL2Label(l2: string): string {
+  return L2_LABELS[l2] ?? l2
+}
+
 export function gM(cat: string): string {
   if (!cat) return 'Outros'
   const c = cat.trim()

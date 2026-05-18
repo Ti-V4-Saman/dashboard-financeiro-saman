@@ -232,7 +232,7 @@ export async function GET(request: Request) {
               WHERE ${pagWhere}
             ) t
             LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
-            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            WHERE COALESCE(t.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
             GROUP BY t.tipo, cat.nome
           `, [de, ate])
 
@@ -352,7 +352,7 @@ export async function GET(request: Request) {
               SELECT COUNT(*) AS total
               FROM ca.contas_receber
               WHERE ${recWhere}
-                AND origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+                AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
             `, [de, ate]),
 
             // Pago sem nota (receita quitada sem NF vinculada)
@@ -362,8 +362,8 @@ export async function GET(request: Request) {
                 COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)    AS valor
               FROM ca.contas_receber cr
               WHERE cr.status = 'Quitado'
-                AND cr.${regime === 'caixa' ? 'data_recebimento' : 'COALESCE(data_competencia, data_vencimento)'} BETWEEN $1 AND $2
-                AND cr.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+                AND ${regime === 'caixa' ? 'cr.data_recebimento' : 'COALESCE(cr.data_competencia, cr.data_vencimento)'} BETWEEN $1 AND $2
+                AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
                 AND NOT EXISTS (
                   SELECT 1 FROM ca.notas_fiscais nf
                   WHERE nf.venda_id = cr.id_venda

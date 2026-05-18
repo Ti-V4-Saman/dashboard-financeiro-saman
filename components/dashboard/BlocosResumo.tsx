@@ -143,24 +143,26 @@ function HighlightRow({ label, value, color }: { label: string; value: string; c
       >
         {label}
       </span>
-      <span style={{ fontSize: 15, fontWeight: 700, color: color || C.default, whiteSpace: 'nowrap', flexShrink: 0 }}>
+      <span style={{ fontSize: 18, fontWeight: 700, color: color || C.default, whiteSpace: 'nowrap', flexShrink: 0 }}>
         {value}
       </span>
     </div>
   )
 }
 
-// Regular row — label left, value+pct right
+// Regular row — label left, optional pct col, value right
 function Row({
   label,
   value,
+  pct,
   sub,
   color,
   last = false,
 }: {
   label: string
   value: string
-  sub?: string
+  pct?: string   // shown inline before value when provided
+  sub?: string   // shown below value when pct is NOT provided
   color?: string
   last?: boolean
 }) {
@@ -168,13 +170,13 @@ function Row({
     <div
       style={{
         display: 'flex',
-        justifyContent: 'space-between',
         alignItems: 'center',
-        gap: 8,
-        padding: '7px 0',
+        gap: 6,
+        padding: '5px 0',
         borderBottom: last ? 'none' : '0.5px solid var(--line)',
       }}
     >
+      {/* label */}
       <span
         style={{
           fontSize: 11,
@@ -188,11 +190,30 @@ function Row({
       >
         {label}
       </span>
-      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+
+      {/* percentage column (only when pct is provided) */}
+      {pct && (
+        <span
+          style={{
+            fontSize: 10,
+            color: color || 'var(--ink3)',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+            minWidth: 36,
+            textAlign: 'right',
+            opacity: 0.75,
+          }}
+        >
+          {pct}
+        </span>
+      )}
+
+      {/* value */}
+      <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 80 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: color || C.default, whiteSpace: 'nowrap' }}>
           {value}
         </div>
-        {sub && (
+        {!pct && sub && (
           <div style={{ fontSize: 10, color: 'var(--ink3)', whiteSpace: 'nowrap' }}>{sub}</div>
         )}
       </div>
@@ -200,7 +221,7 @@ function Row({
   )
 }
 
-// Dual value row: R$ value + % sub
+// Dual value row: pct col + R$ value — single line
 function DualRow({
   label,
   vp,
@@ -216,7 +237,7 @@ function DualRow({
     <Row
       label={label}
       value={fR(vp.valor)}
-      sub={pctFmt(vp.pct)}
+      pct={pctFmt(vp.pct)}
       color={color}
       last={last}
     />

@@ -53,12 +53,27 @@ export function CentrosCusto({ data }: Props) {
     [ccMap]
   )
 
-  const top5 = ccList.slice(0, 5)
+  // Group "Administrativo*" CCs into a single consolidated KPI card
+  const { adminCard, nonAdminTop } = useMemo(() => {
+    const adminCCs = ccList.filter(c => c.nome.toLowerCase().startsWith('administrativo'))
+    const nonAdmin = ccList.filter(c => !c.nome.toLowerCase().startsWith('administrativo'))
+    const adminTotals = adminCCs.reduce(
+      (acc, c) => ({ rec: acc.rec + c.rec, desp: acc.desp + c.desp }),
+      { rec: 0, desp: 0 }
+    )
+    return {
+      adminCard: adminCCs.length > 0
+        ? { nome: 'Administrativo', rec: adminTotals.rec, desp: adminTotals.desp, resultado: adminTotals.rec - adminTotals.desp, count: adminCCs.length }
+        : null,
+      nonAdminTop: nonAdmin.slice(0, adminCCs.length > 0 ? 4 : 5),
+    }
+  }, [ccList])
 
   const recByCC = useMemo(
     () =>
       [...ccList]
         .sort((a, b) => b.rec - a.rec)
+        .filter(c => c.rec > 0)
         .slice(0, 15)
         .map(c => ({ name: c.nome, value: c.rec })),
     [ccList]
@@ -81,6 +96,9 @@ export function CentrosCusto({ data }: Props) {
         .map(c => ({ name: c.nome, value: c.resultado })),
     [ccList]
   )
+
+  // Altura dinâmica para gráficos horizontais
+  const hBarHeight = (n: number) => Math.max(200, n * 28)
 
   const filteredCC = useMemo(() => {
     if (!search) return ccList
@@ -105,9 +123,33 @@ export function CentrosCusto({ data }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Top 5 KPIs */}
-      <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
-        {top5.map(c => (
+      {/* KPIs — admin agrupado + top operacionais */}
+      <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+        {/* Card consolidado Administrativo */}
+        {adminCard && (
+          <div
+            className="rounded-lg p-4"
+            style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}
+          >
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>
+                Administrativo
+              </div>
+              <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none" style={{ background: 'var(--surf2)', color: 'var(--ink3)' }}>
+                {adminCard.count} CCs
+              </span>
+            </div>
+            <div className="text-[16px] font-bold leading-none tracking-tight" style={{ color: adminCard.resultado >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {fR(adminCard.resultado)}
+            </div>
+            <div className="mt-1 text-[10px]" style={{ color: 'var(--ink3)' }}>
+              Rec: {fR(adminCard.rec)} · Desp: {fR(adminCard.desp)}
+            </div>
+          </div>
+        )}
+
+        {/* Cards individuais não-administrativos */}
+        {nonAdminTop.map(c => (
           <div
             key={c.nome}
             className="rounded-lg p-4"
@@ -131,7 +173,7 @@ export function CentrosCusto({ data }: Props) {
         <Card>
           <CardHeader><CardTitle>Receitas por CC</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={hBarHeight(recByCC.length)}>
               <BarChart data={recByCC} layout="vertical" margin={{ left: 0, right: 16 }}>
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
@@ -145,7 +187,7 @@ export function CentrosCusto({ data }: Props) {
         <Card>
           <CardHeader><CardTitle>Despesas por CC</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={hBarHeight(despByCC.length)}>
               <BarChart data={despByCC} layout="vertical" margin={{ left: 0, right: 16 }}>
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
@@ -157,16 +199,18 @@ export function CentrosCusto({ data }: Props) {
         </Card>
       </div>
 
-      {/* Resultado por CC */}
+      {/* Resultado por CC — horizontal para legibilidade */}
       <Card>
         <CardHeader><CardTitle>Resultado por CC</CardTitle></CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={resultByCC} margin={{ left: 0, right: 16 }}>
-              <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} />
-              <YAxis tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} width={55} />
+          <ResponsiveContainer width="100%" height={hBarHeight(resultByCC.length)}>
+            <BarChart data={resultByCC} layout="vertical" margin={{ left: 0, right: 60 }}>
+              <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
               <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
-              <Bar dataKey="value" name="Resultado" radius={[3, 3, 0, 0]} maxBarSize={32}>
+              <Bar dataKey="value" name="Resultado" radius={[0, 3, 3, 0]} maxBarSize={16}
+                label={{ position: 'right', fontSize: 9, fill: 'var(--ink3)', formatter: fmtShort }}
+              >
                 {resultByCC.map((d, i) => (
                   <Cell key={i} fill={d.value >= 0 ? 'var(--green)' : 'var(--red)'} />
                 ))}

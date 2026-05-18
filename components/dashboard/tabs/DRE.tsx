@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import type { Lancamento } from '@/lib/types'
-import { fR, getMonths, mLbl, parseCatHier } from '@/lib/utils'
+import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
 
 // ─── Tooltip (fixed, segue cursor — não é cortado pelo overflow da tabela) ───
 
@@ -131,22 +131,22 @@ function ExecCard({
       }}
     >
       <div
-        className="text-[9px] font-semibold tracking-wider uppercase mb-1.5 leading-tight flex items-center gap-1"
+        className="text-[10px] font-semibold tracking-wider uppercase mb-1.5 leading-tight flex items-center gap-1"
         style={{ color: 'var(--ink3)' }}
       >
         {tip ? <Tip text={tip}><span>{label}</span></Tip> : label}
         {tip && (
-          <span style={{ fontSize: 9, opacity: 0.5, lineHeight: 1 }}>ⓘ</span>
+          <span style={{ fontSize: 10, opacity: 0.5, lineHeight: 1 }}>ⓘ</span>
         )}
       </div>
       <div
-        className="text-[15px] font-bold leading-none tracking-tight"
+        className="text-[18px] font-bold leading-none tracking-tight"
         style={{ color: color || 'var(--ink)' }}
       >
         {value}
       </div>
       {sub && (
-        <div className="mt-0.5 text-[9px]" style={{ color: 'var(--ink3)' }}>
+        <div className="mt-0.5 text-[10px]" style={{ color: 'var(--ink3)' }}>
           {sub}
         </div>
       )}
@@ -255,7 +255,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
     setC2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
   // ── Build dreRows ──────────────────────────────────────────────────────────
-  const { dreRows, recBrutaVals } = useMemo(() => {
+  const { dreRows, recLiqVals } = useMemo(() => {
     const recBrutaVals    = makeVals(col => groupSum(col, 1.99))
     const recLiqVals      = makeVals(col => groupSum(col, 2.99))
     const lucroBrutoVals  = makeVals(col => groupSum(col, 3.99))
@@ -280,7 +280,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
       if (!c1.has(l1)) {
         for (const { l2, children: l3s } of l2s) {
           dreRows.push({
-            id: `l2::${l2}`, kind: 'l2', label: l2, l1Key: l1, l2Key: l2,
+            id: `l2::${l2}`, kind: 'l2', label: getL2Label(l2), l1Key: l1, l2Key: l2,
             vals: makeVals(col => getL2(col, l1, l2)),
           })
           if (!c2.has(l2)) {
@@ -325,7 +325,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
           tip: 'EBT − Impostos sobre o Lucro (grupo 7)\n\n7.1 CSLL · 7.2 IRPJ\n\nResultado final após todos os custos, despesas e impostos.\n\nFórmula: Σ todos os grupos (1 a 7)' })
     }
 
-    return { dreRows, recBrutaVals }
+    return { dreRows, recBrutaVals, recLiqVals }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hier, c1, c2, months, vm])
 
@@ -554,7 +554,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
                   }
                   return [
                     <th key={`${col}-r`} style={{ ...base, textAlign: 'right', borderLeft: '1px solid var(--line)' }}>R$</th>,
-                    <th key={`${col}-p`} style={{ ...base, textAlign: 'right' }}>%</th>,
+                    <th key={`${col}-p`} style={{ ...base, textAlign: 'right' }} title="% da Receita Líquida">% R.Líq.</th>,
                   ]
                 })}
               </tr>
@@ -641,7 +641,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {fPct(val, recBrutaVals[ci])}
+                          {fPct(val, recLiqVals[ci])}
                         </td>,
                       ]
                     })}
@@ -703,8 +703,6 @@ export function DRE({ data }: { data: Lancamento[] }) {
               tip={'EBITDA ÷ Receita Líquida × 100\n\nProxy de eficiência operacional antes de itens não caixa.\n\nFórmula: (Σ grupos 1 a 4) ÷ Rec. Líquida'} />
             <KpiRow label="% Lucro Operacional (EBIT)" value={fPct(kpis.ebit, kpis.recLiq)}          color={pctColor(kpis.ebit)}
               tip={'EBIT ÷ Receita Líquida × 100\n\nResultado operacional após depreciar os ativos.\n\nFórmula: (Σ grupos 1 a 5) ÷ Rec. Líquida'} />
-            <KpiRow label="% Margem Operacional"      value={fPct(kpis.ebit, kpis.recLiq)}           color={pctColor(kpis.ebit)}
-              tip={'Mesmo valor do % Lucro Operacional (EBIT)\n\nEBIT ÷ Receita Líquida × 100'} />
             <KpiRow label="% Lucro Líquido"           value={fPct(kpis.lucroLiq, kpis.recLiq)}       color={pctColor(kpis.lucroLiq)}
               tip={'Lucro Líquido ÷ Receita Líquida × 100\n\nQuanto de cada R$ de receita vira lucro real.\n\nFórmula: (Σ grupos 1 a 7) ÷ Rec. Líquida'} />
             <KpiRow label="% Growth Rate"
