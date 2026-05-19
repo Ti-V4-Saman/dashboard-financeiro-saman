@@ -303,6 +303,7 @@ def _map_baixa(raw: Dict[str, Any]) -> Dict[str, Any]:
         "forma_pagamento":     _str(raw.get("metodo_pagamento") or raw.get("forma_pagamento") or "") or None,
         "observacao":          _str(raw.get("observacao") or raw.get("notes") or "") or None,
         "data_criacao":        _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
+        "id_reconciliacao":    _id(raw.get("id_reconciliacao")),
         "synced_at":           datetime.now(timezone.utc),
     }
 

@@ -428,13 +428,21 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
 
   // ─── Render helpers ──────────────────────────────────────────────────────────
 
-  const TABLE_COLS = ['Orçado R$', '% Fat.', 'Realizado R$', '% Fat.', 'Δ R$', '% Exec', 'Status']
+  const TABLE_COLS = [
+    { label: 'Orçado R$',    key: 'orcado' },
+    { label: '% Fat.',       key: 'pct_orcado' },
+    { label: 'Realizado R$', key: 'realizado' },
+    { label: '% Fat.',       key: 'pct_real' },
+    { label: 'Δ R$',         key: 'delta' },
+    { label: '% Exec',       key: 'exec' },
+    { label: 'Status',       key: 'status' },
+  ]
 
   const renderTableHeader = () => (
     <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
       <th style={{ position: 'sticky', left: 0, zIndex: 3, background: 'var(--surf2)', padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', minWidth: 280, borderRight: '2px solid var(--line)' }}>Descrição</th>
       {TABLE_COLS.map(col => (
-        <th key={col} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>{col}</th>
+        <th key={col.key} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>{col.label}</th>
       ))}
     </tr>
   )

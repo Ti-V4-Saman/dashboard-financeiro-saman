@@ -45,12 +45,11 @@ export function generateInsights(
     })
   }
 
-  // 2. Lançamentos atrasados
+  // 2. Lançamentos atrasados — usa comparação exata com 'Atrasado' (igual ao KPI card)
   const hoje = new Date()
   const atrasados = op.filter(
     r =>
-      r.situacao &&
-      r.situacao.toLowerCase().includes('atraso') &&
+      r.situacao === 'Atrasado' &&
       r.data &&
       r.data < hoje
   )
