@@ -53,20 +53,24 @@ export function CentrosCusto({ data }: Props) {
     [ccMap]
   )
 
-  // Group "Administrativo*" CCs into a single consolidated KPI card
-  const { adminCard, nonAdminTop } = useMemo(() => {
-    const adminCCs = ccList.filter(c => c.nome.toLowerCase().startsWith('administrativo'))
-    const nonAdmin = ccList.filter(c => !c.nome.toLowerCase().startsWith('administrativo'))
-    const adminTotals = adminCCs.reduce(
-      (acc, c) => ({ rec: acc.rec + c.rec, desp: acc.desp + c.desp }),
-      { rec: 0, desp: 0 }
-    )
-    return {
-      adminCard: adminCCs.length > 0
-        ? { nome: 'Administrativo', rec: adminTotals.rec, desp: adminTotals.desp, resultado: adminTotals.rec - adminTotals.desp, count: adminCCs.length }
-        : null,
-      nonAdminTop: nonAdmin.slice(0, adminCCs.length > 0 ? 4 : 5),
-    }
+  // 5 grupos fixos de KPI
+  const kpiGroups = useMemo(() => {
+    const sum = (ccs: typeof ccList) =>
+      ccs.reduce((acc, c) => ({ rec: acc.rec + c.rec, desp: acc.desp + c.desp }), { rec: 0, desp: 0 })
+
+    const groups: { label: string; match: (n: string) => boolean }[] = [
+      { label: 'Administrativo',       match: n => n.toLowerCase().startsWith('administrativo') },
+      { label: 'Operação',             match: n => n.toLowerCase().startsWith('operação') || n.toLowerCase().startsWith('operacao') },
+      { label: 'People & Performance', match: n => n.toLowerCase().includes('people') },
+      { label: 'Aquisição e Expansão', match: n => n.toLowerCase().includes('venda') || n.toLowerCase().includes('monetização') || n.toLowerCase().includes('monetizacao') },
+      { label: 'Tecnologia',           match: n => n.toLowerCase().startsWith('tecnologia') },
+    ]
+
+    return groups.map(g => {
+      const ccs = ccList.filter(c => g.match(c.nome))
+      const { rec, desp } = sum(ccs)
+      return { label: g.label, rec, desp, resultado: rec - desp, count: ccs.length }
+    }).filter(g => g.count > 0)
   }, [ccList])
 
   const recByCC = useMemo(
@@ -101,9 +105,10 @@ export function CentrosCusto({ data }: Props) {
   const hBarHeight = (n: number) => Math.max(200, n * 28)
 
   const filteredCC = useMemo(() => {
-    if (!search) return ccList
-    const q = search.toLowerCase()
-    return ccList.filter(c => c.nome.toLowerCase().includes(q))
+    const list = search
+      ? ccList.filter(c => c.nome.toLowerCase().includes(search.toLowerCase()))
+      : ccList
+    return [...list].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
   }, [ccList, search])
 
   const fmtShort = (v: number) => {
@@ -123,46 +128,29 @@ export function CentrosCusto({ data }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* KPIs — admin agrupado + top operacionais */}
-      <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
-        {/* Card consolidado Administrativo */}
-        {adminCard && (
+      {/* KPIs — 5 grupos fixos */}
+      <div className="grid grid-cols-5 gap-2.5">
+        {kpiGroups.map(g => (
           <div
+            key={g.label}
             className="rounded-lg p-4"
             style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}
           >
             <div className="flex items-center gap-1.5 mb-1.5">
-              <div className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>
-                Administrativo
+              <div className="text-[10px] font-semibold uppercase tracking-wider truncate" style={{ color: 'var(--ink3)' }}>
+                {g.label}
               </div>
-              <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none" style={{ background: 'var(--surf2)', color: 'var(--ink3)' }}>
-                {adminCard.count} CCs
-              </span>
+              {g.count > 1 && (
+                <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none" style={{ background: 'var(--surf2)', color: 'var(--ink3)' }}>
+                  {g.count}
+                </span>
+              )}
             </div>
-            <div className="text-[16px] font-bold leading-none tracking-tight" style={{ color: adminCard.resultado >= 0 ? 'var(--green)' : 'var(--red)' }}>
-              {fR(adminCard.resultado)}
-            </div>
-            <div className="mt-1 text-[10px]" style={{ color: 'var(--ink3)' }}>
-              Rec: {fR(adminCard.rec)} · Desp: {fR(adminCard.desp)}
-            </div>
-          </div>
-        )}
-
-        {/* Cards individuais não-administrativos */}
-        {nonAdminTop.map(c => (
-          <div
-            key={c.nome}
-            className="rounded-lg p-4"
-            style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}
-          >
-            <div className="text-[10px] font-semibold uppercase tracking-wider truncate mb-1.5" style={{ color: 'var(--ink3)' }} title={c.nome}>
-              {c.nome}
-            </div>
-            <div className="text-[16px] font-bold leading-none tracking-tight" style={{ color: c.resultado >= 0 ? 'var(--green)' : 'var(--red)' }}>
-              {fR(c.resultado)}
+            <div className="text-[16px] font-bold leading-none tracking-tight" style={{ color: g.resultado >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {fR(g.resultado)}
             </div>
             <div className="mt-1 text-[10px]" style={{ color: 'var(--ink3)' }}>
-              Rec: {fR(c.rec)} · Desp: {fR(c.desp)}
+              Rec: {fR(g.rec)} · Desp: {fR(g.desp)}
             </div>
           </div>
         ))}

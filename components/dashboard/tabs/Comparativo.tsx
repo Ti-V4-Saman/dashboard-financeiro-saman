@@ -8,10 +8,11 @@ import {
   YAxis,
   Tooltip,
   Legend,
+  ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento } from '@/lib/types'
-import { fR, getMonths, mLbl, parseCatHier } from '@/lib/utils'
+import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
 
 // ─── Visual config (mirrors DRE) ─────────────────────────────────────────────
 
@@ -53,13 +54,13 @@ export function Comparativo({ data, allData }: Props) {
   const [mes1, setMes1] = useState(months[months.length - 2] || months[0] || '')
   const [mes2, setMes2] = useState(months[months.length - 1] || months[0] || '')
 
-  // Collapse state for Mês vs Mês hierarchy
-  const [c1, setC1] = useState<Set<string>>(new Set())
-  const [c2, setC2] = useState<Set<string>>(new Set())
+  // Collapse state — set de EXPANDIDOS (vazio = tudo fechado por padrão)
+  const [exp1, setExp1] = useState<Set<string>>(new Set())
+  const [exp2, setExp2] = useState<Set<string>>(new Set())
   const toggleC1 = (l1: string) =>
-    setC1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
+    setExp1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
   const toggleC2 = (l2: string) =>
-    setC2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
+    setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
   // Monthly line chart data
   const monthlyData = useMemo(() => {
@@ -80,40 +81,54 @@ export function Comparativo({ data, allData }: Props) {
     })
   }, [op, months])
 
-  // Comparison table by month
+  // Comparison table by month (M/M + YoY + YTD)
   const mmTable = useMemo(() => {
-    const result = months.map((ym, i) => {
-      const rows = op.filter(r => {
+    const rowsForYm = (dataset: typeof op, ym: string) =>
+      dataset.filter(r => {
         if (!r.data) return false
-        const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-        return m === ym
+        return `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}` === ym
       })
+    return months.map((ym, i) => {
+      const rows = rowsForYm(op, ym)
       const rec  = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
       const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+      const res  = rec - desp
 
-      // Previous month
+      // M/M — previous month
       let prevRec = 0, prevDesp = 0
       if (i > 0) {
-        const prevYm = months[i - 1]
-        const prevMonthRows = op.filter(r => {
-          if (!r.data) return false
-          const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-          return m === prevYm
-        })
-        prevRec  = prevMonthRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-        prevDesp = prevMonthRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+        const pr = rowsForYm(op, months[i - 1])
+        prevRec  = pr.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+        prevDesp = pr.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
       }
+      const prevRes  = prevRec - prevDesp
+      const varRec   = prevRec  > 0    ? ((rec  - prevRec)  / prevRec)           * 100 : null
+      const varDesp  = prevDesp > 0    ? ((desp - prevDesp) / prevDesp)          * 100 : null
+      const varRes   = prevRes  !== 0  ? ((res  - prevRes)  / Math.abs(prevRes)) * 100 : null
 
-      const varRec = prevRec > 0 ? ((rec - prevRec) / prevRec) * 100 : null
-      const varDesp = prevDesp > 0 ? ((desp - prevDesp) / prevDesp) * 100 : null
-      const res = rec - desp
-      const prevRes = prevRec - prevDesp
-      const varRes = prevRes !== 0 ? ((res - prevRes) / Math.abs(prevRes)) * 100 : null
+      // YoY — same month, previous year
+      const [yr, mo] = ym.split('-').map(Number)
+      const prevYearYm = `${yr - 1}-${String(mo).padStart(2, '0')}`
+      const pyRows = rowsForYm(allOp, prevYearYm)
+      const yoyRec  = pyRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
+      const yoyDesp = pyRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
+      const yoyRes  = yoyRec - yoyDesp
+      const varYoYRec  = yoyRec  > 0   ? ((rec  - yoyRec)  / yoyRec)            * 100 : null
+      const varYoYDesp = yoyDesp > 0   ? ((desp - yoyDesp) / yoyDesp)           * 100 : null
+      const varYoYRes  = yoyRes  !== 0 ? ((res  - yoyRes)  / Math.abs(yoyRes))  * 100 : null
 
-      return { ym, mes: mLbl(ym), rec, desp, res, varRec, varDesp, varRes }
+      return { ym, mes: mLbl(ym), rec, desp, res, varRec, varDesp, varRes, varYoYRec, varYoYDesp, varYoYRes, hasYoY: yoyRec > 0 || yoyDesp > 0 }
     })
-    return result
-  }, [op, months])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [op, allOp, months])
+
+  // YTD totals (all months in the table)
+  const ytd = useMemo(() => {
+    const rec  = mmTable.reduce((s, r) => s + r.rec,  0)
+    const desp = mmTable.reduce((s, r) => s + r.desp, 0)
+    const res  = rec - desp
+    return { rec, desp, res, margem: rec > 0 ? (res / rec) * 100 : null }
+  }, [mmTable])
 
   // Mes1 vs Mes2 — 3-level hierarchy (mirrors DRE)
   const hierComparison = useMemo(() => {
@@ -168,10 +183,10 @@ export function Comparativo({ data, allData }: Props) {
     const rows: CompRow[] = []
     for (const { l1, v1, v2, children: l2s } of hierComparison) {
       rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, v1, v2 })
-      if (!c1.has(l1)) {
+      if (exp1.has(l1)) {
         for (const { l2, v1: p2, v2: r2, children: l3s } of l2s) {
-          rows.push({ id: `l2::${l2}`, kind: 'l2', label: l2, l1Key: l1, l2Key: l2, v1: p2, v2: r2 })
-          if (!c2.has(l2)) {
+          rows.push({ id: `l2::${l2}`, kind: 'l2', label: getL2Label(l2), l1Key: l1, l2Key: l2, v1: p2, v2: r2 })
+          if (exp2.has(l2)) {
             for (const { l3, v1: p3, v2: r3 } of l3s) {
               rows.push({ id: `l3::${l1}::${l2}::${l3}`, kind: 'l3', label: l3, l1Key: l1, l2Key: l2, v1: p3, v2: r3 })
             }
@@ -181,7 +196,7 @@ export function Comparativo({ data, allData }: Props) {
     }
     return rows
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hierComparison, c1, c2])
+  }, [hierComparison, exp1, exp2])
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
@@ -198,6 +213,7 @@ export function Comparativo({ data, allData }: Props) {
   const varFmt = (v: number | null) => {
     if (v === null) return '—'
     const prefix = v >= 0 ? '+' : ''
+    if (Math.abs(v) > 500) return `${prefix}${v > 0 ? '>500' : '<-500'}%*`
     return `${prefix}${v.toFixed(1)}%`
   }
 
@@ -218,9 +234,10 @@ export function Comparativo({ data, allData }: Props) {
                 contentStyle={{ border: '1px solid var(--line)', borderRadius: 6, background: 'var(--surface)', fontSize: 11 }}
               />
               <Legend wrapperStyle={{ fontSize: 10, color: 'var(--ink3)' }} />
+              <ReferenceLine y={0} stroke="var(--line2)" strokeDasharray="3 3" strokeWidth={1} />
               <Line type="monotone" dataKey="receita" name="Receita" stroke="var(--green)" strokeWidth={2} dot={{ r: 3 }} />
               <Line type="monotone" dataKey="despesa" name="Despesa" stroke="var(--red)" strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="resultado" name="Resultado" stroke="var(--blue)" strokeWidth={2} strokeDasharray="4 2" dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="resultado" name="Resultado" stroke="var(--blue)" strokeWidth={2.5} strokeDasharray="4 2" dot={{ r: 3.5 }} />
             </LineChart>
           </ResponsiveContainer>
         </CardContent>
@@ -282,9 +299,9 @@ export function Comparativo({ data, allData }: Props) {
                 const s    = ROW_STYLE[row.kind]
                 const ind  = INDENT[row.kind]
                 const canToggle = row.kind === 'l1' || row.kind === 'l2'
-                const isCollapsed = row.kind === 'l1' ? c1.has(row.l1Key!) : row.kind === 'l2' ? c2.has(row.l2Key!) : false
-                const arrow = canToggle ? (isCollapsed ? '▸ ' : '▾ ') : ''
-                const varPct = row.kind === 'l3' && row.v1 !== 0 ? ((row.v2 - row.v1) / Math.abs(row.v1)) * 100 : null
+                const isExpanded = row.kind === 'l1' ? exp1.has(row.l1Key!) : row.kind === 'l2' ? exp2.has(row.l2Key!) : false
+                const arrow = canToggle ? (isExpanded ? '▾ ' : '▸ ') : ''
+                const varPct = row.v1 !== 0 ? ((row.v2 - row.v1) / Math.abs(row.v1)) * 100 : null
                 const isL1Border = row.kind === 'l1'
                 return (
                   <tr
@@ -313,8 +330,8 @@ export function Comparativo({ data, allData }: Props) {
                     <td style={{ padding: `${s.py}px 16px`, textAlign: 'right', fontSize: s.fs, fontWeight: s.fw, borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap', color: row.v2 >= 0 ? 'var(--green)' : 'var(--red)' }}>
                       {fR(row.v2)}
                     </td>
-                    <td style={{ padding: `${s.py}px 16px`, textAlign: 'right', fontSize: s.fs, fontWeight: row.kind === 'l3' ? 500 : s.fw, borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap', color: varColor(varPct) }}>
-                      {row.kind === 'l3' ? varFmt(varPct) : '—'}
+                    <td style={{ padding: `${s.py}px 16px`, textAlign: 'right', fontSize: s.fs, fontWeight: 500, borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap', color: varColor(varPct) }}>
+                      {varFmt(varPct)}
                     </td>
                   </tr>
                 )
@@ -324,68 +341,72 @@ export function Comparativo({ data, allData }: Props) {
         </div>
       </div>
 
-      {/* ── Variação M/M ────────────────────────────────────────────────────── */}
+      {/* ── Variação M/M + YoY ──────────────────────────────────────────────── */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
-        {/* section header */}
         <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Variação M/M — Receitas, Despesas, Resultado</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Evolução Mensal — M/M e Ano vs Ano (YoY)</span>
         </div>
 
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 640, width: '100%' }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 900, width: '100%' }}>
             <thead>
+              {/* Grupo de colunas */}
+              <tr style={{ background: 'var(--surf2)', borderBottom: '1px solid var(--line)' }}>
+                <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', whiteSpace: 'nowrap', borderBottom: '2px solid var(--line2)' }}>Mês</th>
+                <th colSpan={3} style={{ padding: '6px 16px', textAlign: 'center', fontSize: 10, fontWeight: 700, color: 'var(--green)', borderLeft: '2px solid var(--line2)', borderBottom: '1px solid var(--line)' }}>Receita</th>
+                <th colSpan={3} style={{ padding: '6px 16px', textAlign: 'center', fontSize: 10, fontWeight: 700, color: 'var(--red)', borderLeft: '2px solid var(--line2)', borderBottom: '1px solid var(--line)' }}>Despesa</th>
+                <th colSpan={3} style={{ padding: '6px 16px', textAlign: 'center', fontSize: 10, fontWeight: 700, color: 'var(--blue)', borderLeft: '2px solid var(--line2)', borderBottom: '1px solid var(--line)' }}>Resultado</th>
+                <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '2px solid var(--line2)', whiteSpace: 'nowrap', borderBottom: '2px solid var(--line2)' }}>Margem %</th>
+              </tr>
               <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
-                {[
-                  { label: 'Mês',       align: 'left'  as const },
-                  { label: 'Receita',   align: 'right' as const },
-                  { label: 'Var %',     align: 'right' as const },
-                  { label: 'Despesa',   align: 'right' as const },
-                  { label: 'Var %',     align: 'right' as const },
-                  { label: 'Resultado', align: 'right' as const },
-                  { label: 'Var %',     align: 'right' as const },
-                ].map((col, i) => (
-                  <th
-                    key={`${col.label}-${i}`}
-                    style={{
-                      padding: '10px 16px',
-                      textAlign: col.align,
-                      fontSize: 11, fontWeight: 600, color: 'var(--ink3)',
-                      whiteSpace: 'nowrap',
-                      borderLeft: i > 0 ? '1px solid var(--line)' : undefined,
-                    }}
-                  >
-                    {col.label}
-                  </th>
-                ))}
+                {(['Receita', 'Despesa', 'Resultado'] as const).flatMap(g => [
+                  <th key={`${g}-val`} style={{ padding: '6px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: 'var(--ink3)', borderLeft: '2px solid var(--line2)', whiteSpace: 'nowrap' }}>R$</th>,
+                  <th key={`${g}-mm`}  style={{ padding: '6px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }}>M/M%</th>,
+                  <th key={`${g}-yoy`} style={{ padding: '6px 12px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }}>YoY%</th>,
+                ])}
               </tr>
             </thead>
             <tbody>
               {mmTable.map(row => (
                 <tr key={row.ym} style={{ background: 'var(--surface)', borderBottom: '1px solid var(--line)' }}>
-                  <td style={{ padding: '9px 16px', fontSize: 11, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap' }}>
-                    {row.mes}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 11, fontWeight: 500, borderLeft: '1px solid var(--line)', color: 'var(--green)', whiteSpace: 'nowrap' }}>
-                    {fR(row.rec)}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varRec), whiteSpace: 'nowrap' }}>
-                    {varFmt(row.varRec)}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 11, fontWeight: 500, borderLeft: '1px solid var(--line)', color: 'var(--red)', whiteSpace: 'nowrap' }}>
-                    {fR(row.desp)}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varDesp, true), whiteSpace: 'nowrap' }}>
-                    {varFmt(row.varDesp)}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '1px solid var(--line)', color: row.res >= 0 ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>
-                    {fR(row.res)}
-                  </td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varRes), whiteSpace: 'nowrap' }}>
-                    {varFmt(row.varRes)}
+                  <td style={{ padding: '9px 16px', fontSize: 11, fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap' }}>{row.mes}</td>
+                  {/* Receita */}
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 11, fontWeight: 500, borderLeft: '2px solid var(--line2)', color: 'var(--green)', whiteSpace: 'nowrap' }}>{fR(row.rec)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varRec), whiteSpace: 'nowrap' }}>{varFmt(row.varRec)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varYoYRec), whiteSpace: 'nowrap' }}>{row.hasYoY ? varFmt(row.varYoYRec) : <span style={{ color: 'var(--ink3)' }}>s/d</span>}</td>
+                  {/* Despesa */}
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 11, fontWeight: 500, borderLeft: '2px solid var(--line2)', color: 'var(--red)', whiteSpace: 'nowrap' }}>{fR(row.desp)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varDesp, true), whiteSpace: 'nowrap' }}>{varFmt(row.varDesp)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varYoYDesp, true), whiteSpace: 'nowrap' }}>{row.hasYoY ? varFmt(row.varYoYDesp) : <span style={{ color: 'var(--ink3)' }}>s/d</span>}</td>
+                  {/* Resultado */}
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '2px solid var(--line2)', color: row.res >= 0 ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>{fR(row.res)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varRes), whiteSpace: 'nowrap' }}>{varFmt(row.varRes)}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 10, borderLeft: '1px solid var(--line)', color: varColor(row.varYoYRes), whiteSpace: 'nowrap' }}>{row.hasYoY ? varFmt(row.varYoYRes) : <span style={{ color: 'var(--ink3)' }}>s/d</span>}</td>
+                  {/* Margem */}
+                  <td style={{ padding: '9px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, borderLeft: '2px solid var(--line2)', whiteSpace: 'nowrap', color: row.rec > 0 ? (row.res >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--ink3)' }}>
+                    {row.rec > 0 ? `${((row.res / row.rec) * 100).toFixed(1)}%` : '—'}
                   </td>
                 </tr>
               ))}
             </tbody>
+            {/* YTD footer */}
+            <tfoot>
+              <tr style={{ background: '#dcfce7', borderTop: '2px solid var(--line2)' }}>
+                <td style={{ padding: '10px 16px', fontSize: 11, fontWeight: 700, color: '#166534', whiteSpace: 'nowrap' }}>Acumulado YTD</td>
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '2px solid var(--line2)', color: '#166534', whiteSpace: 'nowrap' }}>{fR(ytd.rec)}</td>
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '2px solid var(--line2)', color: '#166534', whiteSpace: 'nowrap' }}>{fR(ytd.desp)}</td>
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '2px solid var(--line2)', color: ytd.res >= 0 ? '#166534' : '#991b1b', whiteSpace: 'nowrap' }}>{fR(ytd.res)}</td>
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', borderLeft: '1px solid var(--line)' }} />
+                <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, borderLeft: '2px solid var(--line2)', color: ytd.margem !== null ? (ytd.margem >= 0 ? '#166534' : '#991b1b') : 'var(--ink3)', whiteSpace: 'nowrap' }}>
+                  {ytd.margem !== null ? `${ytd.margem.toFixed(1)}%` : '—'}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>

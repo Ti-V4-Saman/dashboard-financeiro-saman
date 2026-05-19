@@ -246,13 +246,13 @@ export function DRE({ data }: { data: Lancamento[] }) {
 
   const makeVals = (fn: (col: string) => number) => cols.map(fn)
 
-  // Collapse state
-  const [c1, setC1] = useState<Set<string>>(new Set())
-  const [c2, setC2] = useState<Set<string>>(new Set())
+  // Collapse state — set de EXPANDIDOS (vazio = tudo fechado por padrão)
+  const [exp1, setExp1] = useState<Set<string>>(new Set())
+  const [exp2, setExp2] = useState<Set<string>>(new Set())
   const toggleL1 = (l1: string) =>
-    setC1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
+    setExp1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
   const toggleL2 = (l2: string) =>
-    setC2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
+    setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
   // ── Build dreRows ──────────────────────────────────────────────────────────
   const { dreRows, recLiqVals } = useMemo(() => {
@@ -277,13 +277,13 @@ export function DRE({ data }: { data: Lancamento[] }) {
         vals: makeVals(col => getL1(col, l1)),
       })
 
-      if (!c1.has(l1)) {
+      if (exp1.has(l1)) {
         for (const { l2, children: l3s } of l2s) {
           dreRows.push({
             id: `l2::${l2}`, kind: 'l2', label: getL2Label(l2), l1Key: l1, l2Key: l2,
             vals: makeVals(col => getL2(col, l1, l2)),
           })
-          if (!c2.has(l2)) {
+          if (exp2.has(l2)) {
             for (const l3 of l3s) {
               dreRows.push({
                 id: `l3::${l1}::${l2}::${l3}`, kind: 'l3', label: l3,
@@ -327,7 +327,7 @@ export function DRE({ data }: { data: Lancamento[] }) {
 
     return { dreRows, recBrutaVals, recLiqVals }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hier, c1, c2, months, vm])
+  }, [hier, exp1, exp2, months, vm])
 
   // ── Executive KPIs (accumulated) ──────────────────────────────────────────
   const exec = useMemo(() => {
@@ -565,10 +565,10 @@ export function DRE({ data }: { data: Lancamento[] }) {
                 const s    = ROW_STYLE[row.kind]
                 const ind  = INDENT[row.kind]
                 const canT = row.kind === 'l1' || row.kind === 'l2'
-                const collapsed =
-                  row.kind === 'l1' ? c1.has(row.l1Key!) :
-                  row.kind === 'l2' ? c2.has(row.l2Key!) : false
-                const arrow = canT ? (collapsed ? '▸ ' : '▾ ') : ''
+                const isExpanded =
+                  row.kind === 'l1' ? exp1.has(row.l1Key!) :
+                  row.kind === 'l2' ? exp2.has(row.l2Key!) : false
+                const arrow = canT ? (isExpanded ? '▾ ' : '▸ ') : ''
 
                 return (
                   <tr

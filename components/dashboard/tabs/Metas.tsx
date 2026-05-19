@@ -3,7 +3,8 @@
 import { useState, useMemo } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
-import { fR } from '@/lib/utils'
+import { fR, parseCatHier, getL2Label } from '@/lib/utils'
+import { DRE_LEAVES, NON_DRE_ROWS, KPI_ROWS, ALL_CATEGORY_LEAVES } from '@/lib/categoryTree'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +20,8 @@ interface MetaRow {
   realSigned: number
   planAbs?: number
   realAbs?: number
-  pctExec?: number
+  pctExec?: number | null
+  hasMeta?: boolean
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -42,14 +44,12 @@ const fetcher = (url: string) => fetch(url).then(r => r.json())
 
 function getRealizadoRaw(m: Meta, allData: Lancamento[]): number {
   const [y, mo] = m.mes_referencia.split('-').map(Number)
-  
   return allData
     .filter(r => {
       if (!r.data || r.isTransfer) return false
       if (r.situacao !== 'Quitado') return false
       if (r.tipo !== m.tipo_lancamento) return false
       if (r.data.getFullYear() !== y || r.data.getMonth() + 1 !== mo) return false
-      
       if (m.tipo === 'centro_de_custo') {
         return (r.cc1 || '').toLowerCase() === (m.centro_de_custo || '').toLowerCase()
       } else {
@@ -81,6 +81,34 @@ function StatusBadge({ ratio }: { ratio: number }) {
   return <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Ok</span>
 }
 
+function SemMetaBadge() {
+  return <span style={{ background: 'var(--surf2)', color: 'var(--ink3)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 500, whiteSpace: 'nowrap', border: '1px dashed var(--line2)' }}>Sem meta</span>
+}
+
+// Agrupar leaves da árvore estática para o <select> do formulário
+const FORM_GROUPS = (() => {
+  const groups: { label: string; leaves: typeof ALL_CATEGORY_LEAVES }[] = []
+  const map = new Map<string, typeof ALL_CATEGORY_LEAVES>()
+
+  for (const leaf of ALL_CATEGORY_LEAVES) {
+    let groupKey: string
+    if (leaf.isKpi) {
+      groupKey = '📊 KPIs'
+    } else if (leaf.isNonDre) {
+      groupKey = '📋 Não-DRE / Caixa'
+    } else {
+      const { l1 } = parseCatHier(leaf.fullName)
+      groupKey = l1
+    }
+    if (!map.has(groupKey)) {
+      map.set(groupKey, [])
+      groups.push({ label: groupKey, leaves: map.get(groupKey)! })
+    }
+    map.get(groupKey)!.push(leaf)
+  }
+  return groups
+})()
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface MetasTabProps {
@@ -94,20 +122,21 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
   })
 
   const [view, setView] = useState<'dash' | 'manage'>('dash')
-  const [editing, setEditing] = useState<Partial<Meta> | null>(null)
+  const [editing, setEditing] = useState<Partial<Meta> & { tipo_valor?: 'reais' | 'percentual' } | null>(null)
   const [saving, setSaving] = useState(false)
 
-  const [c1, setC1] = useState<Set<string>>(new Set())
-  const [c2, setC2] = useState<Set<string>>(new Set())
-  const [cardFilter, setCardFilter] = useState<'all' | 'ok' | 'atencao' | 'estourado'>('all')
+  // Sanfona — set de EXPANDIDOS (vazio = tudo fechado por padrão)
+  const [exp1, setExp1] = useState<Set<string>>(new Set())
+  const [exp2, setExp2] = useState<Set<string>>(new Set())
+  const [cardFilter, setCardFilter] = useState<'all' | 'ok' | 'atencao' | 'estourado' | 'sem_meta'>('all')
 
-  const toggleCard = (id: 'all' | 'ok' | 'atencao' | 'estourado') =>
+  const toggleCard = (id: 'all' | 'ok' | 'atencao' | 'estourado' | 'sem_meta') =>
     setCardFilter(prev => prev === id ? 'all' : id)
 
   const toggleL1 = (l1: string) =>
-    setC1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
+    setExp1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
   const toggleL2 = (l2: string) =>
-    setC2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
+    setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
   const fromMonth = filters.dateFrom.slice(0, 7)
   const toMonth   = filters.dateTo.slice(0, 7)
@@ -119,6 +148,8 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     if (!editing) return
     setSaving(true)
     try {
+      const cat = editing.categoria || ''
+      const { l1, l2 } = parseCatHier(cat)
       const payload = {
         ...editing,
         id: editing.id || `meta-${Date.now()}`,
@@ -126,14 +157,20 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
         mes_referencia: editing.mes_referencia || new Date().toISOString().slice(0, 7),
         valor_planejado: Number(editing.valor_planejado || 0),
         tipo_lancamento: editing.tipo_lancamento || 'Despesa',
+        categoria_nivel_1: editing.categoria_nivel_1 || l1,
+        categoria_nivel_2: editing.categoria_nivel_2 || l2,
+        categoria_nivel_3: editing.categoria_nivel_3 || cat,
+        observacao: editing.observacao || (editing.tipo_valor === 'percentual' ? `tipo_valor:percentual` : ''),
       }
+      // Não persistir tipo_valor — é apenas estado local de UI
+      delete (payload as any).tipo_valor
       await fetch('/api/metas', {
         method: 'POST',
         body: JSON.stringify(payload),
       })
       mutate()
       setEditing(null)
-    } catch (err) {
+    } catch {
       alert('Erro ao salvar meta')
     } finally {
       setSaving(false)
@@ -145,7 +182,7 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     try {
       await fetch(`/api/metas?id=${id}`, { method: 'DELETE' })
       mutate()
-    } catch (err) {
+    } catch {
       alert('Erro ao excluir')
     }
   }
@@ -182,36 +219,72 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     [metasNoPeriodo, allData],
   )
 
-  const catHierMap = useMemo(() => {
-    const m = new Map<string, { catSup: string; catSup1: string }>()
+  // Valores realizados por cat1 (todos os lançamentos quitados do período)
+  const realByL3 = useMemo(() => {
+    const from = new Date(filters.dateFrom)
+    const to   = new Date(filters.dateTo + 'T23:59:59')
+    const map  = new Map<string, number>()
     for (const r of allData) {
-      if (r.cat1 && !m.has(r.cat1))
-        m.set(r.cat1, { catSup: r.catSup || r.catSup1 || r.cat1, catSup1: r.catSup1 || r.cat1 })
+      if (!r.data || r.isTransfer || r.situacao !== 'Quitado') continue
+      if (r.data < from || r.data > to) continue
+      if (!r.cat1) continue
+      const sign = r.tipo === 'Receita' ? 1 : -1
+      map.set(r.cat1, (map.get(r.cat1) ?? 0) + sign * r.valor)
     }
-    return m
-  }, [allData])
+    return map
+  }, [allData, filters])
 
-  const hier = useMemo(() => {
-    const map = new Map<string, Map<string, Map<string, { planSigned: number; realSigned: number; planAbs: number; realAbs: number }>>>()
+  // Valores planejados por cat3 (metas enriquecidas)
+  const planByL3 = useMemo(() => {
+    const map = new Map<string, { planSigned: number; planAbs: number }>()
     for (const m of enriched) {
       const l3 = m.categoria_nivel_3 || m.categoria || '(sem categoria)'
-      const lookup = catHierMap.get(l3)
-      const l1 = m.categoria_nivel_1 || (lookup?.catSup1 || l3)
-      const l2 = m.categoria_nivel_2 || (lookup?.catSup  || l1)
+      if (!map.has(l3)) map.set(l3, { planSigned: 0, planAbs: 0 })
+      map.get(l3)!.planSigned += m.planSigned
+      map.get(l3)!.planAbs   += (m.planAbs ?? 0)
+    }
+    return map
+  }, [enriched])
 
-      if (!map.has(l1)) map.set(l1, new Map())
-      if (!map.get(l1)!.has(l2)) map.get(l1)!.set(l2, new Map())
-      if (!map.get(l1)!.get(l2)!.has(l3))
-        map.get(l1)!.get(l2)!.set(l3, { planSigned: 0, realSigned: 0, planAbs: 0, realAbs: 0 })
+  // ─── Hierarquia DRE (sempre com todas as linhas da árvore estática) ──────────
 
-      const agg = map.get(l1)!.get(l2)!.get(l3)!
-      agg.planSigned += m.planSigned
-      agg.realSigned += m.realSigned
-      agg.planAbs    += m.planAbs
-      agg.realAbs    += m.realAbs
+  const hier = useMemo(() => {
+    // Nomes a excluir do DRE (linhas não-DRE e KPI ficam em seções separadas)
+    const excludeFromDre = new Set([
+      ...NON_DRE_ROWS.map(r => r.fullName),
+      ...KPI_ROWS.map(r => r.fullName),
+    ])
+
+    // União: árvore estática + dados reais + metas cadastradas (só DRE)
+    const allL3 = new Set<string>([
+      ...DRE_LEAVES.map(l => l.fullName),
+      ...[...realByL3.keys()].filter(k => !excludeFromDre.has(k)),
+      ...[...planByL3.keys()].filter(k => !excludeFromDre.has(k)),
+    ])
+
+    // Monta l1 → l2 → l3
+    const l1Map = new Map<string, Map<string, Map<string, {
+      planSigned: number; realSigned: number; planAbs: number; realAbs: number; hasMeta: boolean
+    }>>>()
+
+    for (const l3 of allL3) {
+      const { l1, l2 } = parseCatHier(l3)
+      const realSigned = realByL3.get(l3) ?? 0
+      const plan       = planByL3.get(l3) ?? { planSigned: 0, planAbs: 0 }
+      const hasMeta    = planByL3.has(l3)
+
+      if (!l1Map.has(l1)) l1Map.set(l1, new Map())
+      if (!l1Map.get(l1)!.has(l2)) l1Map.get(l1)!.set(l2, new Map())
+      l1Map.get(l1)!.get(l2)!.set(l3, {
+        planSigned: plan.planSigned,
+        realSigned,
+        planAbs:   plan.planAbs,
+        realAbs:   Math.abs(realSigned),
+        hasMeta,
+      })
     }
 
-    return [...map.entries()]
+    return [...l1Map.entries()]
       .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
       .map(([l1, l2map]) => {
         const l2list = [...l2map.entries()]
@@ -221,12 +294,15 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
               .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
               .map(([l3, agg]) => ({
                 l3, ...agg,
-                pctExec: agg.planAbs > 0 ? agg.realAbs / agg.planAbs : 0,
+                pctExec: agg.planAbs > 0 ? agg.realAbs / agg.planAbs : (agg.hasMeta ? 0 : null),
               }))
             return {
-              l2,
+              l2: getL2Label(l2),
+              l2Key: l2,
               planSigned: l3list.reduce((s, x) => s + x.planSigned, 0),
               realSigned: l3list.reduce((s, x) => s + x.realSigned, 0),
+              planAbs:    l3list.reduce((s, x) => s + x.planAbs,    0),
+              realAbs:    l3list.reduce((s, x) => s + x.realAbs,    0),
               children:   l3list,
             }
           })
@@ -234,10 +310,46 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
           l1,
           planSigned: l2list.reduce((s, x) => s + x.planSigned, 0),
           realSigned: l2list.reduce((s, x) => s + x.realSigned, 0),
+          planAbs:    l2list.reduce((s, x) => s + x.planAbs,    0),
+          realAbs:    l2list.reduce((s, x) => s + x.realAbs,    0),
           children:   l2list,
         }
       })
-  }, [enriched, catHierMap])
+  }, [realByL3, planByL3])
+
+  // ─── Seção Não-DRE ───────────────────────────────────────────────────────────
+
+  const nonDreData = useMemo(() =>
+    NON_DRE_ROWS.map(row => {
+      const sign     = row.tipo === 'Receita' ? 1 : -1
+      const realSgn  = realByL3.get(row.fullName) ?? 0
+      const plan     = planByL3.get(row.fullName) ?? { planSigned: 0, planAbs: 0 }
+      const hasMeta  = planByL3.has(row.fullName)
+      const planAbs  = plan.planAbs
+      const realAbs  = Math.abs(realSgn)
+      return {
+        ...row,
+        planSigned: plan.planSigned,
+        realSigned: realSgn,
+        planAbs,
+        realAbs,
+        hasMeta,
+        pctExec: planAbs > 0 ? realAbs / planAbs : (hasMeta ? 0 : null),
+      }
+    }),
+  [realByL3, planByL3])
+
+  // ─── Seção KPI ───────────────────────────────────────────────────────────────
+
+  const kpiData = useMemo(() =>
+    KPI_ROWS.map(row => {
+      const plan    = planByL3.get(row.fullName) ?? { planSigned: 0, planAbs: 0 }
+      const hasMeta = planByL3.has(row.fullName)
+      return { ...row, plan, hasMeta }
+    }),
+  [planByL3])
+
+  // ─── Resumo KPIs (cards) ─────────────────────────────────────────────────────
 
   const groupSum = (key: 'planSigned' | 'realSigned', maxPfx: number) =>
     hier.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + h[key], 0)
@@ -246,11 +358,14 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     const l3all = hier.flatMap(h => h.children.flatMap(l2 => l2.children))
     return {
       cadastradas: metasNoPeriodo.length,
-      ok:          l3all.filter(r => r.pctExec < 0.75).length,
-      atencao:     l3all.filter(r => r.pctExec >= 0.75 && r.pctExec < 1).length,
-      estouradas:  l3all.filter(r => r.pctExec >= 1).length,
+      ok:          l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec < 0.75).length,
+      atencao:     l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec >= 0.75 && r.pctExec < 1).length,
+      estouradas:  l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec >= 1).length,
+      semMeta:     l3all.filter(r => !r.hasMeta).length,
     }
   }, [hier, metasNoPeriodo])
+
+  // ─── Linhas da tabela DRE ────────────────────────────────────────────────────
 
   const tableRows = useMemo(() => {
     const fatLiqPlan    = groupSum('planSigned', 2.99)
@@ -262,10 +377,12 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     const resLiqPlan    = groupSum('planSigned', 99)
     const resLiqReal    = groupSum('realSigned', 99)
 
-    const passesFilter = (pctExec: number) => {
+    const passesFilter = (pctExec: number | null, hasMeta: boolean) => {
       if (cardFilter === 'all') return true
-      if (cardFilter === 'ok') return pctExec < 0.75
-      if (cardFilter === 'atencao') return pctExec >= 0.75 && pctExec < 1
+      if (cardFilter === 'sem_meta') return !hasMeta
+      if (!hasMeta || pctExec === null) return false
+      if (cardFilter === 'ok')       return pctExec < 0.75
+      if (cardFilter === 'atencao')  return pctExec >= 0.75 && pctExec < 1
       return pctExec >= 1
     }
 
@@ -273,24 +390,27 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     for (let i = 0; i < hier.length; i++) {
       const { l1, planSigned, realSigned, children: l2s } = hier[i]
       const prefix = numPrefix(l1)
-      const l1HasMatch = cardFilter === 'all' || l2s.some(l2 => l2.children.some(l3 => passesFilter(l3.pctExec)))
+      const l1HasMatch = cardFilter === 'all' || l2s.some(l2 => l2.children.some(l3 => passesFilter(l3.pctExec, l3.hasMeta)))
       if (!l1HasMatch) {
         const nextPfx = i + 1 < hier.length ? numPrefix(hier[i + 1].l1) : Infinity
         if (prefix <= 2 && nextPfx > 2) rows.push({ id: '__fatLiq__', kind: 'subtotal', label: '(=) Faturamento Líquido', planSigned: groupSum('planSigned', 2.99), realSigned: groupSum('realSigned', 2.99) })
         if (prefix <= 3 && nextPfx > 3) rows.push({ id: '__lucroBruto__', kind: 'subtotal', label: '(=) Lucro Bruto', planSigned: groupSum('planSigned', 3.99), realSigned: groupSum('realSigned', 3.99) })
         if (prefix <= 4 && nextPfx > 4) rows.push({ id: '__ebitda__', kind: 'ebitda', label: '(=) EBITDA', planSigned: groupSum('planSigned', 4.99), realSigned: groupSum('realSigned', 4.99) })
-        if (i === hier.length - 1) rows.push({ id: '__resLiq__', kind: 'resultado', label: '(=) Resultado Líquido', planSigned: groupSum('planSigned', 99), realSigned: groupSum('realSigned', 99) })
+        if (prefix <= 5 && nextPfx > 5) rows.push({ id: '__ebit__', kind: 'subtotal', label: '(=) Lucro Operacional (EBIT)', planSigned: groupSum('planSigned', 5.99), realSigned: groupSum('realSigned', 5.99) })
+        if (i === hier.length - 1) rows.push({ id: '__resLiq__', kind: 'resultado', label: '(=) Lucro Líquido', planSigned: resLiqPlan, realSigned: resLiqReal })
         continue
       }
-      rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, planSigned, realSigned })
-      if (!c1.has(l1)) {
-        for (const { l2, planSigned: p2, realSigned: r2, children: l3s } of l2s) {
-          if (cardFilter !== 'all' && !l3s.some(l3 => passesFilter(l3.pctExec))) continue
-          rows.push({ id: `l2::${l2}`, kind: 'l2', label: l2, l1Key: l1, l2Key: l2, planSigned: p2, realSigned: r2 })
-          if (!c2.has(l2)) {
-            for (const { l3, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec } of l3s) {
-              if (!passesFilter(pctExec)) continue
-              rows.push({ id: `l3::${l1}::${l2}::${l3}`, kind: 'l3', label: l3, l1Key: l1, l2Key: l2, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec })
+      const l1PlanAbs = l2s.reduce((s, l2) => s + l2.children.reduce((ss, l3) => ss + (l3.planAbs ?? 0), 0), 0)
+      const l1RealAbs = l2s.reduce((s, l2) => s + l2.children.reduce((ss, l3) => ss + (l3.realAbs ?? 0), 0), 0)
+      rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, planSigned, realSigned, planAbs: l1PlanAbs, realAbs: l1RealAbs, pctExec: l1PlanAbs > 0 ? l1RealAbs / l1PlanAbs : 0 })
+      if (exp1.has(l1)) {
+        for (const { l2, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, children: l3s } of l2s) {
+          if (cardFilter !== 'all' && !l3s.some(l3 => passesFilter(l3.pctExec, l3.hasMeta))) continue
+          rows.push({ id: `l2::${l2Key}`, kind: 'l2', label: l2, l1Key: l1, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, pctExec: l2PlanAbs > 0 ? l2RealAbs / l2PlanAbs : null })
+          if (exp2.has(l2Key)) {
+            for (const { l3, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta } of l3s) {
+              if (!passesFilter(pctExec, hasMeta)) continue
+              rows.push({ id: `l3::${l1}::${l2Key}::${l3}`, kind: 'l3', label: l3, l1Key: l1, l2Key, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta })
             }
           }
         }
@@ -299,20 +419,74 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
       if (prefix <= 2 && nextPfx > 2) rows.push({ id: '__fatLiq__', kind: 'subtotal', label: '(=) Faturamento Líquido', planSigned: fatLiqPlan, realSigned: fatLiqReal })
       if (prefix <= 3 && nextPfx > 3) rows.push({ id: '__lucroBruto__', kind: 'subtotal', label: '(=) Lucro Bruto', planSigned: lucroBrutoPlan, realSigned: lucroBrutoReal })
       if (prefix <= 4 && nextPfx > 4) rows.push({ id: '__ebitda__', kind: 'ebitda', label: '(=) EBITDA', planSigned: ebitdaPlan, realSigned: ebitdaReal })
-      if (i === hier.length - 1) rows.push({ id: '__resLiq__', kind: 'resultado', label: '(=) Resultado Líquido', planSigned: resLiqPlan, realSigned: resLiqReal })
+      if (prefix <= 5 && nextPfx > 5) rows.push({ id: '__ebit__', kind: 'subtotal', label: '(=) Lucro Operacional (EBIT)', planSigned: groupSum('planSigned', 5.99), realSigned: groupSum('realSigned', 5.99) })
+      if (i === hier.length - 1) rows.push({ id: '__resLiq__', kind: 'resultado', label: '(=) Lucro Líquido', planSigned: resLiqPlan, realSigned: resLiqReal })
     }
     return rows
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hier, c1, c2, cardFilter])
+  }, [hier, exp1, exp2, cardFilter])
+
+  // ─── Render helpers ──────────────────────────────────────────────────────────
+
+  const TABLE_COLS = ['Orçado R$', '% Fat.', 'Realizado R$', '% Fat.', 'Δ R$', '% Exec', 'Status']
+
+  const renderTableHeader = () => (
+    <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
+      <th style={{ position: 'sticky', left: 0, zIndex: 3, background: 'var(--surf2)', padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', minWidth: 280, borderRight: '2px solid var(--line)' }}>Descrição</th>
+      {TABLE_COLS.map(col => (
+        <th key={col} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>{col}</th>
+      ))}
+    </tr>
+  )
+
+  const renderMetaRow = (row: MetaRow) => {
+    const s = ROW_STYLE[row.kind]
+    const isL3 = row.kind === 'l3'
+    const canToggle = row.kind === 'l1' || row.kind === 'l2'
+    const isExpanded = row.kind === 'l1' ? exp1.has(row.l1Key!) : row.kind === 'l2' ? exp2.has(row.l2Key!) : false
+    const arrow = canToggle ? (isExpanded ? '▾ ' : '▸ ') : ''
+    const delta = (row.realSigned ?? 0) - (row.planSigned ?? 0)
+    const showExec = row.pctExec !== undefined && row.pctExec !== null
+
+    return (
+      <tr key={row.id} style={{ background: s.bg, borderBottom: '1px solid var(--line)', borderTop: (row.kind !== 'l1' && row.kind !== 'l2' && row.kind !== 'l3') ? '2px solid var(--line2)' : undefined }}>
+        <td onClick={() => { if (row.kind === 'l1') toggleL1(row.l1Key!); if (row.kind === 'l2') toggleL2(row.l2Key!); }} style={{ position: 'sticky', left: 0, zIndex: 2, background: s.bg, color: s.fg, fontWeight: s.fw, fontSize: s.fs, padding: `${s.py}px 16px ${s.py}px ${INDENT[row.kind]}px`, cursor: canToggle ? 'pointer' : 'default', userSelect: 'none', borderRight: '2px solid var(--line)' }}>{arrow}{row.label}</td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: s.fs, fontWeight: s.fw, color: row.planSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{row.planSigned ? fR(row.planSigned) : <span style={{ color: 'var(--ink3)' }}>—</span>}</td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>{faturamento > 0 && row.planSigned ? fPctOfFat(row.planSigned, faturamento) : '—'}</td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: s.fs, fontWeight: s.fw, color: row.realSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{row.realSigned ? fR(row.realSigned) : <span style={{ color: 'var(--ink3)' }}>—</span>}</td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>{faturamento > 0 && row.realSigned ? fPctOfFat(row.realSigned, faturamento) : '—'}</td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: s.fs, fontWeight: isL3 ? 400 : s.fw, borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap', color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
+          {(row.planSigned || row.realSigned) ? (delta >= 0 ? '+' : '') + fR(delta) : <span style={{ color: 'var(--ink3)' }}>—</span>}
+        </td>
+        <td style={{ padding: '8px 12px', textAlign: 'right', borderLeft: '1px solid var(--line)' }}>
+          {showExec ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+              <div style={{ width: 60, height: 5, background: 'var(--surf3)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.pctExec! >= 1 ? 'var(--red)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)' }} />
+              </div>
+              <span style={{ fontSize: 10, fontWeight: 600 }}>{fPct(row.pctExec!)}</span>
+            </div>
+          ) : isL3 ? <span style={{ fontSize: 10, color: 'var(--ink3)' }}>—</span> : '—'}
+        </td>
+        <td style={{ padding: '8px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
+          {isL3 && (showExec ? <StatusBadge ratio={row.pctExec!} /> : row.hasMeta === false ? <SemMetaBadge /> : null)}
+        </td>
+      </tr>
+    )
+  }
+
+  // ─── Render Sections ─────────────────────────────────────────────────────────
 
   const renderDashboard = () => (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+      {/* KPI Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 12 }}>
         {[
-          { id: 'all' as const, label: 'Metas cadastradas', value: summary.cadastradas, color: 'var(--blue)' },
-          { id: 'ok' as const, label: 'Dentro da meta', value: summary.ok, color: 'var(--green)' },
-          { id: 'atencao' as const, label: 'Em atenção', value: summary.atencao, color: 'var(--amber)' },
-          { id: 'estourado' as const, label: 'Estouradas', value: summary.estouradas, color: 'var(--red)' },
+          { id: 'all' as const,      label: 'Metas cadastradas', value: summary.cadastradas, color: 'var(--blue)' },
+          { id: 'ok' as const,       label: 'Dentro da meta',    value: summary.ok,          color: 'var(--green)' },
+          { id: 'atencao' as const,  label: 'Em atenção',        value: summary.atencao,     color: 'var(--amber)' },
+          { id: 'estourado' as const,label: 'Estouradas',        value: summary.estouradas,  color: 'var(--red)' },
+          { id: 'sem_meta' as const, label: 'Sem meta',          value: summary.semMeta,     color: 'var(--ink3)' },
         ].map(card => {
           const active = cardFilter === card.id
           return (
@@ -324,130 +498,289 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
         })}
       </div>
 
+      {/* Tabela DRE */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 780, width: '100%' }}>
-            <thead>
-              <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
-                <th style={{ position: 'sticky', left: 0, zIndex: 3, background: 'var(--surf2)', padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', minWidth: 260, borderRight: '2px solid var(--line)' }}>Descrição</th>
-                {['Meta R$', 'Meta %', 'Realizado R$', 'Real %', '% Exec', 'Status'].map(col => (
-                  <th key={col} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>{col}</th>
+          <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 820, width: '100%' }}>
+            <thead>{renderTableHeader()}</thead>
+            <tbody>{tableRows.map(row => renderMetaRow(row))}</tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Seção Não-DRE */}
+      {(nonDreData.some(r => r.hasMeta || r.realSigned !== 0)) && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', background: 'var(--surf2)', borderBottom: '1px solid var(--line2)', fontSize: 12, fontWeight: 700, color: 'var(--ink)' }}>
+            📋 Movimentos Não-DRE (Caixa / Balanço)
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 820, width: '100%' }}>
+              <thead>{renderTableHeader()}</thead>
+              <tbody>
+                {nonDreData
+                  .filter(r => cardFilter === 'all' || r.hasMeta || r.realSigned !== 0)
+                  .map(row => {
+                    const delta = row.realSigned - row.planSigned
+                    const showExec = row.pctExec !== null
+                    return (
+                      <tr key={row.fullName} style={{ borderBottom: '1px solid var(--line)' }}>
+                        <td style={{ position: 'sticky', left: 0, zIndex: 2, background: 'var(--surface)', color: 'var(--ink)', fontSize: 11, padding: '8px 16px 8px 28px', borderRight: '2px solid var(--line)' }}>{row.fullName}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 11, color: row.planSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{row.planSigned ? fR(row.planSigned) : <span style={{ color: 'var(--ink3)' }}>—</span>}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>—</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 11, color: row.realSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{row.realSigned ? fR(row.realSigned) : <span style={{ color: 'var(--ink3)' }}>—</span>}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>—</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 11, borderLeft: '1px solid var(--line)', color: delta >= 0 ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>{(row.planSigned || row.realSigned) ? (delta >= 0 ? '+' : '') + fR(delta) : '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', borderLeft: '1px solid var(--line)' }}>
+                          {showExec ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                              <div style={{ width: 60, height: 5, background: 'var(--surf3)', borderRadius: 3, overflow: 'hidden' }}>
+                                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.pctExec! >= 1 ? 'var(--red)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)' }} />
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 600 }}>{fPct(row.pctExec!)}</span>
+                            </div>
+                          ) : '—'}
+                        </td>
+                        <td style={{ padding: '8px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
+                          {showExec ? <StatusBadge ratio={row.pctExec!} /> : <SemMetaBadge />}
+                        </td>
+                      </tr>
+                    )
+                  })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Seção KPI */}
+      {kpiData.some(r => r.hasMeta) && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', background: 'var(--surf2)', borderBottom: '1px solid var(--line2)', fontSize: 12, fontWeight: 700, color: 'var(--ink)' }}>
+            📊 KPIs & Indicadores (metas cadastradas)
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', fontSize: 11, minWidth: 820, width: '100%' }}>
+              <thead>
+                <tr style={{ background: 'var(--surf2)', borderBottom: '2px solid var(--line2)' }}>
+                  <th style={{ position: 'sticky', left: 0, zIndex: 3, background: 'var(--surf2)', padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', minWidth: 280, borderRight: '2px solid var(--line)' }}>KPI</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>Meta Orçada</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>Observação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kpiData.filter(r => r.hasMeta).map(row => (
+                  <tr key={row.fullName} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td style={{ position: 'sticky', left: 0, zIndex: 2, background: 'var(--surface)', color: 'var(--ink)', fontSize: 11, padding: '8px 16px 8px 28px', borderRight: '2px solid var(--line)' }}>{row.fullName}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--blue)', borderLeft: '1px solid var(--line)' }}>
+                      {row.plan.planAbs.toFixed(2).replace('.', ',')}{row.fullName.startsWith('%') ? '%' : row.fullName.startsWith('$') ? ' R$' : ''}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)', borderLeft: '1px solid var(--line)' }}>Computado automaticamente</td>
+                  </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  const renderManage = () => {
+    const tipoValor = editing?.tipo_valor || 'reais'
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {/* Formulário */}
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, padding: 24 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>{editing?.id ? 'Editar Meta' : 'Nova Meta'}</h3>
+          <form onSubmit={saveMeta} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+
+            {/* Mês */}
+            <div>
+              <label style={labelStyle}>Mês de Referência</label>
+              <input type="month" value={editing?.mes_referencia || ''} onChange={e => setEditing({ ...editing, mes_referencia: e.target.value })} style={inputStyle} required />
+            </div>
+
+            {/* Categoria (select agrupado) */}
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={labelStyle}>Categoria</label>
+              <select
+                value={editing?.categoria || ''}
+                onChange={e => {
+                  const val = e.target.value
+                  const leaf = ALL_CATEGORY_LEAVES.find(l => l.fullName === val)
+                  if (!leaf) return
+                  const { l1, l2 } = parseCatHier(leaf.fullName)
+                  setEditing({
+                    ...editing,
+                    categoria: leaf.fullName,
+                    categoria_nivel_3: leaf.fullName,
+                    categoria_nivel_1: l1,
+                    categoria_nivel_2: l2,
+                    tipo_lancamento: leaf.tipo,
+                  })
+                }}
+                style={{ ...inputStyle, cursor: 'pointer' }}
+                required
+              >
+                <option value="">Selecione uma categoria...</option>
+                {FORM_GROUPS.map(group => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.leaves.map(leaf => (
+                      <option key={leaf.fullName} value={leaf.fullName}>{leaf.fullName}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+
+            {/* Tipo Lançamento (auto-preenchido, mas editável) */}
+            <div>
+              <label style={labelStyle}>Tipo Lançamento</label>
+              <select value={editing?.tipo_lancamento || 'Despesa'} onChange={e => setEditing({ ...editing, tipo_lancamento: e.target.value as any })} style={{ ...inputStyle, cursor: 'pointer' }}>
+                <option value="Receita">Receita</option>
+                <option value="Despesa">Despesa</option>
+              </select>
+            </div>
+
+            {/* Tipo do Valor (R$ ou %) */}
+            <div>
+              <label style={labelStyle}>Tipo de Meta</label>
+              <div style={{ display: 'flex', gap: 0, borderRadius: 6, border: '1px solid var(--line2)', overflow: 'hidden' }}>
+                {(['reais', 'percentual'] as const).map(tv => (
+                  <button
+                    key={tv}
+                    type="button"
+                    onClick={() => setEditing({ ...editing, tipo_valor: tv })}
+                    style={{ flex: 1, padding: '8px', fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none', background: tipoValor === tv ? 'var(--brand)' : 'var(--surf2)', color: tipoValor === tv ? '#fff' : 'var(--ink2)', transition: 'all 0.15s' }}
+                  >
+                    {tv === 'reais' ? 'R$ Valor' : '% Percentual'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Valor Planejado */}
+            <div>
+              <label style={labelStyle}>{tipoValor === 'percentual' ? 'Meta (%)' : 'Valor Planejado (R$)'}</label>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: 'var(--ink3)', fontWeight: 600 }}>
+                  {tipoValor === 'percentual' ? '%' : 'R$'}
+                </span>
+                <input
+                  type="number"
+                  step={tipoValor === 'percentual' ? '0.1' : '0.01'}
+                  min="0"
+                  value={editing?.valor_planejado || ''}
+                  onChange={e => setEditing({ ...editing, valor_planejado: Number(e.target.value) })}
+                  placeholder={tipoValor === 'percentual' ? '0,0' : '0,00'}
+                  style={{ ...inputStyle, paddingLeft: 28 }}
+                  required
+                />
+              </div>
+              {tipoValor === 'percentual' && (
+                <p style={{ fontSize: 10, color: 'var(--ink3)', marginTop: 4 }}>Informe o valor percentual (ex: 15 para 15%)</p>
+              )}
+            </div>
+
+            {/* Observação */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={labelStyle}>Observação (opcional)</label>
+              <input type="text" value={editing?.observacao || ''} onChange={e => setEditing({ ...editing, observacao: e.target.value })} placeholder="Ex: referência ao budget aprovado em..." style={inputStyle} />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, marginTop: 4 }}>
+              <button type="submit" disabled={saving} style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 20px', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>
+                {saving ? 'Salvando...' : 'Salvar Meta'}
+              </button>
+              <button type="button" onClick={() => setEditing(null)} style={{ background: 'var(--surf2)', color: 'var(--ink2)', border: '1px solid var(--line2)', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+              {!editing?.id && (
+                <button type="button" onClick={() => setEditing({ mes_referencia: editing?.mes_referencia || '' })} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--ink3)', fontSize: 11, cursor: 'pointer' }}>
+                  Limpar formulário
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+
+        {/* Lista de metas cadastradas */}
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', background: 'var(--surf2)', borderBottom: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Metas cadastradas ({metas.length})</span>
+            <button onClick={() => setEditing({ mes_referencia: fromMonth, tipo_valor: 'reais' })} style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              + Nova Meta
+            </button>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: 'var(--surf2)', borderBottom: '1px solid var(--line2)' }}>
+                <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Mês</th>
+                <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Tipo</th>
+                <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Categoria</th>
+                <th style={{ padding: '10px 16px', textAlign: 'right', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Valor</th>
+                <th style={{ padding: '10px 16px', textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Ações</th>
               </tr>
             </thead>
             <tbody>
-              {tableRows.map(row => {
-                const s = ROW_STYLE[row.kind]
-                const isL3 = row.kind === 'l3'
-                const collapsed = row.kind === 'l1' ? c1.has(row.l1Key!) : row.kind === 'l2' ? c2.has(row.l2Key!) : false
-                const arrow = (row.kind === 'l1' || row.kind === 'l2') ? (collapsed ? '▸ ' : '▾ ') : ''
-
-                return (
-                  <tr key={row.id} style={{ background: s.bg, borderBottom: '1px solid var(--line)', borderTop: (row.kind !== 'l1' && row.kind !== 'l2' && row.kind !== 'l3') ? '2px solid var(--line2)' : undefined }}>
-                    <td onClick={() => { if (row.kind === 'l1') toggleL1(row.l1Key!); if (row.kind === 'l2') toggleL2(row.l2Key!); }} style={{ position: 'sticky', left: 0, zIndex: 2, background: s.bg, color: s.fg, fontWeight: s.fw, fontSize: s.fs, padding: `${s.py}px 16px ${s.py}px ${INDENT[row.kind]}px`, cursor: arrow ? 'pointer' : 'default', borderRight: '2px solid var(--line)' }}>{arrow}{row.label}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: s.fs, fontWeight: isL3 ? 400 : s.fw, color: row.planSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{fR(row.planSigned)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>{isL3 ? fPctOfFat(row.planSigned, faturamento) : '—'}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: s.fs, fontWeight: isL3 ? 400 : s.fw, color: row.realSigned >= 0 ? 'var(--green)' : 'var(--red)', borderLeft: '1px solid var(--line)' }}>{fR(row.realSigned)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 10, color: 'var(--ink3)' }}>{isL3 ? fPctOfFat(row.realSigned, faturamento) : '—'}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', borderLeft: '1px solid var(--line)' }}>
-                      {isL3 && row.pctExec !== undefined ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                          <div style={{ width: 60, height: 5, background: 'var(--surf3)', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{ width: `${Math.min(row.pctExec, 1) * 100}%`, height: '100%', background: row.pctExec >= 1 ? 'var(--red)' : row.pctExec >= 0.75 ? 'var(--amber-m)' : 'var(--green)' }} />
-                          </div>
-                          <span style={{ fontSize: 10, fontWeight: 600 }}>{fPct(row.pctExec)}</span>
-                        </div>
-                      ) : '—'}
-                    </td>
-                    <td style={{ padding: '8px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
-                      {isL3 && row.pctExec !== undefined && <StatusBadge ratio={row.pctExec} />}
-                    </td>
-                  </tr>
-                )
-              })}
+              {metas.length === 0 && (
+                <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: 'var(--ink3)' }}>Nenhuma meta cadastrada. Use o formulário acima para adicionar.</td></tr>
+              )}
+              {metas.map(m => (
+                <tr key={m.id} style={{ borderBottom: '1px solid var(--line)' }} className="hover:bg-[var(--surf2)]">
+                  <td style={{ padding: '9px 16px', color: 'var(--ink2)' }}>{m.mes_referencia}</td>
+                  <td style={{ padding: '9px 16px' }}><span style={{ color: m.tipo_lancamento === 'Receita' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{m.tipo_lancamento}</span></td>
+                  <td style={{ padding: '9px 16px', color: 'var(--ink)', maxWidth: 340 }}>{m.categoria}</td>
+                  <td style={{ padding: '9px 16px', textAlign: 'right', fontWeight: 700, color: 'var(--ink)' }}>{fR(m.valor_planejado)}</td>
+                  <td style={{ padding: '9px 16px', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                      <button onClick={() => { setEditing({ ...m, tipo_valor: m.observacao?.includes('tipo_valor:percentual') ? 'percentual' : 'reais' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Editar</button>
+                      <button onClick={() => deleteMeta(m.id)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Excluir</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       </div>
-    </>
-  )
-
-  const renderManage = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, padding: 24 }}>
-        <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>{editing?.id ? 'Editar Meta' : 'Nova Meta'}</h3>
-        <form onSubmit={saveMeta} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--ink3)', marginBottom: 4 }}>Mês de Referência</label>
-            <input type="month" value={editing?.mes_referencia || ''} onChange={e => setEditing({...editing, mes_referencia: e.target.value})} style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--line2)', fontSize: 12 }} required />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--ink3)', marginBottom: 4 }}>Tipo Lançamento</label>
-            <select value={editing?.tipo_lancamento || 'Despesa'} onChange={e => setEditing({...editing, tipo_lancamento: e.target.value as any})} style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--line2)', fontSize: 12 }}>
-              <option value="Receita">Receita</option>
-              <option value="Despesa">Despesa</option>
-            </select>
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--ink3)', marginBottom: 4 }}>Categoria (ContaAzul)</label>
-            <input type="text" value={editing?.categoria || ''} onChange={e => setEditing({...editing, categoria: e.target.value, categoria_nivel_3: e.target.value})} placeholder="Ex: 2.1.03 ISS" style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--line2)', fontSize: 12 }} required />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--ink3)', marginBottom: 4 }}>Valor Planejado</label>
-            <input type="number" step="0.01" value={editing?.valor_planejado || ''} onChange={e => setEditing({...editing, valor_planejado: Number(e.target.value)})} placeholder="0.00" style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--line2)', fontSize: 12 }} required />
-          </div>
-          <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, marginTop: 8 }}>
-            <button type="submit" disabled={saving} style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Salvando...' : 'Salvar Meta'}</button>
-            <button type="button" onClick={() => setEditing(null)} style={{ background: 'var(--surf2)', color: 'var(--ink2)', border: '1px solid var(--line2)', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancelar</button>
-          </div>
-        </form>
-      </div>
-
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead>
-            <tr style={{ background: 'var(--surf2)', borderBottom: '1px solid var(--line2)' }}>
-              <th style={{ padding: '12px 16px', textAlign: 'left' }}>Mês</th>
-              <th style={{ padding: '12px 16px', textAlign: 'left' }}>Tipo</th>
-              <th style={{ padding: '12px 16px', textAlign: 'left' }}>Categoria</th>
-              <th style={{ padding: '12px 16px', textAlign: 'right' }}>Valor</th>
-              <th style={{ padding: '12px 16px', textAlign: 'center' }}>Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {metas.map(m => (
-              <tr key={m.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                <td style={{ padding: '10px 16px' }}>{m.mes_referencia}</td>
-                <td style={{ padding: '10px 16px' }}><span style={{ color: m.tipo_lancamento === 'Receita' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{m.tipo_lancamento}</span></td>
-                <td style={{ padding: '10px 16px' }}>{m.categoria}</td>
-                <td style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 600 }}>{fR(m.valor_planejado)}</td>
-                <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                    <button onClick={() => { setEditing(m); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Editar</button>
-                    <button onClick={() => deleteMeta(m.id)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Excluir</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {metas.length === 0 && <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: 'var(--ink3)' }}>Nenhuma meta cadastrada.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{view === 'dash' ? 'Metas vs Realizado' : 'Gerenciador de Metas'}</h2>
-          <p style={{ fontSize: 11, color: 'var(--ink3)', marginTop: 3 }}>{view === 'dash' ? `Faturamento do período: ${fR(faturamento)}` : 'Adicione ou edite metas cadastradas no banco de dados'}</p>
+          <p style={{ fontSize: 11, color: 'var(--ink3)', marginTop: 3 }}>
+            {view === 'dash'
+              ? `Faturamento do período: ${fR(faturamento)} · ${DRE_LEAVES.length} categorias DRE · ${NON_DRE_ROWS.length} linhas não-DRE · ${KPI_ROWS.length} KPIs`
+              : 'Adicione ou edite metas — a categoria é selecionada da lista completa do plano de contas'}
+          </p>
         </div>
-        <button onClick={() => setView(view === 'dash' ? 'manage' : 'dash')} style={{ background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 6, padding: '6px 12px', fontSize: 11, fontWeight: 600, color: 'var(--ink2)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          onClick={() => { setView(view === 'dash' ? 'manage' : 'dash'); if (view === 'manage') setEditing(null); }}
+          style={{ background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 6, padding: '6px 14px', fontSize: 11, fontWeight: 600, color: 'var(--ink2)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+        >
           {view === 'dash' ? '⚙ Gerenciar Metas' : '📊 Voltar ao Dashboard'}
         </button>
       </div>
-      {isLoading && metas.length === 0 ? <div style={{ color: 'var(--ink3)', fontSize: 12, padding: '32px 0', textAlign: 'center' }}>Carregando metas...</div> : (view === 'dash' ? renderDashboard() : renderManage())}
+      {isLoading && metas.length === 0
+        ? <div style={{ color: 'var(--ink3)', fontSize: 12, padding: '32px 0', textAlign: 'center' }}>Carregando metas...</div>
+        : (view === 'dash' ? renderDashboard() : renderManage())}
     </div>
   )
+}
+
+// ─── Estilos reutilizáveis ────────────────────────────────────────────────────
+
+const labelStyle: React.CSSProperties = {
+  display: 'block', fontSize: 11, color: 'var(--ink3)', marginBottom: 4, fontWeight: 500,
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '8px 12px', borderRadius: 6,
+  border: '1px solid var(--line2)', fontSize: 12, background: 'var(--surface)', color: 'var(--ink)',
 }
