@@ -22,6 +22,7 @@ interface MetaRow {
   realAbs?: number
   pctExec?: number | null
   hasMeta?: boolean
+  tipoLancamento?: 'Receita' | 'Despesa'
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -29,6 +30,10 @@ interface MetaRow {
 function numPrefix(s: string): number {
   const m = s.match(/^([\d.]+)/)
   return m ? parseFloat(m[1]) : 999
+}
+
+function isReceita(l1: string): boolean {
+  return l1.startsWith('1') || l1.startsWith('6.1')
 }
 
 function fPct(ratio: number): string {
@@ -75,10 +80,15 @@ const INDENT: Record<RowKind, number> = {
   l1: 12, l2: 28, l3: 44, subtotal: 12, ebitda: 12, resultado: 12,
 }
 
-function StatusBadge({ ratio }: { ratio: number }) {
-  if (ratio >= 1) return <span style={{ background: 'var(--red-l)', color: 'var(--red)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Estourado</span>
+function StatusBadge({ ratio, tipoLancamento = 'Despesa' }: { ratio: number; tipoLancamento?: 'Receita' | 'Despesa' }) {
+  if (tipoLancamento === 'Receita') {
+    if (ratio >= 1)    return <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Meta Batida</span>
+    if (ratio >= 0.75) return <span style={{ background: 'var(--amber-l)', color: 'var(--amber)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Atenção</span>
+    return             <span style={{ background: 'var(--red-l)',   color: 'var(--red)',   padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Crítico</span>
+  }
+  if (ratio >= 1)    return <span style={{ background: 'var(--red-l)',   color: 'var(--red)',   padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Estourado</span>
   if (ratio >= 0.75) return <span style={{ background: 'var(--amber-l)', color: 'var(--amber)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Atenção</span>
-  return <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Ok</span>
+  return             <span style={{ background: 'var(--green-l)', color: 'var(--green)', padding: '2px 9px', borderRadius: 4, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>Ok</span>
 }
 
 function SemMetaBadge() {
@@ -355,14 +365,26 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     hier.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + h[key], 0)
 
   const summary = useMemo(() => {
-    const l3all = hier.flatMap(h => h.children.flatMap(l2 => l2.children))
-    return {
-      cadastradas: metasNoPeriodo.length,
-      ok:          l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec < 0.75).length,
-      atencao:     l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec >= 0.75 && r.pctExec < 1).length,
-      estouradas:  l3all.filter(r => r.hasMeta && r.pctExec !== null && r.pctExec >= 1).length,
-      semMeta:     l3all.filter(r => !r.hasMeta).length,
+    let ok = 0, atencao = 0, estouradas = 0, semMeta = 0
+    for (const h of hier) {
+      const rec = isReceita(h.l1)
+      for (const l2 of h.children) {
+        for (const l3 of l2.children) {
+          if (!l3.hasMeta)              { semMeta++;    continue }
+          if (l3.pctExec === null)       continue
+          if (rec) {
+            if (l3.pctExec >= 1)         ok++
+            else if (l3.pctExec >= 0.75) atencao++
+            else                         estouradas++
+          } else {
+            if (l3.pctExec >= 1)         estouradas++
+            else if (l3.pctExec >= 0.75) atencao++
+            else                         ok++
+          }
+        }
+      }
     }
+    return { cadastradas: metasNoPeriodo.length, ok, atencao, estouradas, semMeta }
   }, [hier, metasNoPeriodo])
 
   // ─── Linhas da tabela DRE ────────────────────────────────────────────────────
@@ -377,12 +399,18 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     const resLiqPlan    = groupSum('planSigned', 99)
     const resLiqReal    = groupSum('realSigned', 99)
 
-    const passesFilter = (pctExec: number | null, hasMeta: boolean) => {
-      if (cardFilter === 'all') return true
-      if (cardFilter === 'sem_meta') return !hasMeta
+    const passesFilter = (pctExec: number | null, hasMeta: boolean, rec: boolean) => {
+      if (cardFilter === 'all')         return true
+      if (cardFilter === 'sem_meta')    return !hasMeta
       if (!hasMeta || pctExec === null) return false
-      if (cardFilter === 'ok')       return pctExec < 0.75
-      if (cardFilter === 'atencao')  return pctExec >= 0.75 && pctExec < 1
+      if (rec) {
+        if (cardFilter === 'ok')        return pctExec >= 1
+        if (cardFilter === 'atencao')   return pctExec >= 0.75 && pctExec < 1
+        if (cardFilter === 'estourado') return pctExec < 0.75
+        return false
+      }
+      if (cardFilter === 'ok')          return pctExec < 0.75
+      if (cardFilter === 'atencao')     return pctExec >= 0.75 && pctExec < 1
       return pctExec >= 1
     }
 
@@ -390,7 +418,7 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     for (let i = 0; i < hier.length; i++) {
       const { l1, planSigned, realSigned, children: l2s } = hier[i]
       const prefix = numPrefix(l1)
-      const l1HasMatch = cardFilter === 'all' || l2s.some(l2 => l2.children.some(l3 => passesFilter(l3.pctExec, l3.hasMeta)))
+      const l1HasMatch = cardFilter === 'all' || l2s.some(l2 => l2.children.some(l3 => passesFilter(l3.pctExec, l3.hasMeta, isReceita(l1))))
       if (!l1HasMatch) {
         const nextPfx = i + 1 < hier.length ? numPrefix(hier[i + 1].l1) : Infinity
         if (prefix <= 2 && nextPfx > 2) rows.push({ id: '__fatLiq__', kind: 'subtotal', label: '(=) Faturamento Líquido', planSigned: groupSum('planSigned', 2.99), realSigned: groupSum('realSigned', 2.99) })
@@ -405,12 +433,12 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
       rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, planSigned, realSigned, planAbs: l1PlanAbs, realAbs: l1RealAbs, pctExec: l1PlanAbs > 0 ? l1RealAbs / l1PlanAbs : 0 })
       if (exp1.has(l1)) {
         for (const { l2, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, children: l3s } of l2s) {
-          if (cardFilter !== 'all' && !l3s.some(l3 => passesFilter(l3.pctExec, l3.hasMeta))) continue
+          if (cardFilter !== 'all' && !l3s.some(l3 => passesFilter(l3.pctExec, l3.hasMeta, isReceita(l1)))) continue
           rows.push({ id: `l2::${l2Key}`, kind: 'l2', label: l2, l1Key: l1, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, pctExec: l2PlanAbs > 0 ? l2RealAbs / l2PlanAbs : null })
           if (exp2.has(l2Key)) {
             for (const { l3, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta } of l3s) {
-              if (!passesFilter(pctExec, hasMeta)) continue
-              rows.push({ id: `l3::${l1}::${l2Key}::${l3}`, kind: 'l3', label: l3, l1Key: l1, l2Key, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta })
+              if (!passesFilter(pctExec, hasMeta, isReceita(l1))) continue
+              rows.push({ id: `l3::${l1}::${l2Key}::${l3}`, kind: 'l3', label: l3, l1Key: l1, l2Key, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta, tipoLancamento: isReceita(l1) ? 'Receita' : 'Despesa' })
             }
           }
         }
@@ -470,14 +498,16 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
           {showExec ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
               <div style={{ width: 60, height: 5, background: 'var(--surf3)', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.pctExec! >= 1 ? 'var(--red)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)' }} />
+                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.tipoLancamento === 'Receita'
+                    ? (row.pctExec! >= 1 ? 'var(--green)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--red)')
+                    : (row.pctExec! >= 1 ? 'var(--red)'   : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)') }} />
               </div>
               <span style={{ fontSize: 10, fontWeight: 600 }}>{fPct(row.pctExec!)}</span>
             </div>
           ) : isL3 ? <span style={{ fontSize: 10, color: 'var(--ink3)' }}>—</span> : '—'}
         </td>
         <td style={{ padding: '8px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
-          {isL3 && (showExec ? <StatusBadge ratio={row.pctExec!} /> : row.hasMeta === false ? <SemMetaBadge /> : null)}
+          {isL3 && (showExec ? <StatusBadge ratio={row.pctExec!} tipoLancamento={row.tipoLancamento} /> : row.hasMeta === false ? <SemMetaBadge /> : null)}
         </td>
       </tr>
     )
@@ -493,12 +523,12 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
           { id: 'all' as const,      label: 'Metas cadastradas', value: summary.cadastradas, color: 'var(--blue)' },
           { id: 'ok' as const,       label: 'Dentro da meta',    value: summary.ok,          color: 'var(--green)' },
           { id: 'atencao' as const,  label: 'Em atenção',        value: summary.atencao,     color: 'var(--amber)' },
-          { id: 'estourado' as const,label: 'Estouradas',        value: summary.estouradas,  color: 'var(--red)' },
+          { id: 'estourado' as const, label: 'Críticas', value: summary.estouradas, color: 'var(--red)', tooltip: 'Despesas: acima do orçamento  •  Receitas: abaixo de 75% da meta' },
           { id: 'sem_meta' as const, label: 'Sem meta',          value: summary.semMeta,     color: 'var(--ink3)' },
         ].map(card => {
           const active = cardFilter === card.id
           return (
-            <div key={card.id} onClick={() => toggleCard(card.id)} style={{ background: 'var(--surface)', border: active ? `2px solid ${card.color}` : '1px solid var(--line)', borderRadius: 10, padding: active ? '15px 19px' : '16px 20px', cursor: 'pointer', boxShadow: active ? `0 0 0 3px ${card.color}22` : 'none' }}>
+            <div key={card.id} onClick={() => toggleCard(card.id)} title={'tooltip' in card ? card.tooltip : undefined} style={{ background: 'var(--surface)', border: active ? `2px solid ${card.color}` : '1px solid var(--line)', borderRadius: 10, padding: active ? '15px 19px' : '16px 20px', cursor: 'pointer', boxShadow: active ? `0 0 0 3px ${card.color}22` : 'none' }}>
               <div style={{ fontSize: 11, color: active ? card.color : 'var(--ink3)', marginBottom: 6, fontWeight: active ? 600 : 400 }}>{card.label}</div>
               <div style={{ fontSize: 28, fontWeight: 700, color: card.color }}>{card.value}</div>
             </div>
@@ -543,14 +573,16 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
                           {showExec ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                               <div style={{ width: 60, height: 5, background: 'var(--surf3)', borderRadius: 3, overflow: 'hidden' }}>
-                                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.pctExec! >= 1 ? 'var(--red)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)' }} />
+                                <div style={{ width: `${Math.min(row.pctExec!, 1) * 100}%`, height: '100%', background: row.tipo === 'Receita'
+                                    ? (row.pctExec! >= 1 ? 'var(--green)' : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--red)')
+                                    : (row.pctExec! >= 1 ? 'var(--red)'   : row.pctExec! >= 0.75 ? 'var(--amber-m)' : 'var(--green)') }} />
                               </div>
                               <span style={{ fontSize: 10, fontWeight: 600 }}>{fPct(row.pctExec!)}</span>
                             </div>
                           ) : '—'}
                         </td>
                         <td style={{ padding: '8px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
-                          {showExec ? <StatusBadge ratio={row.pctExec!} /> : <SemMetaBadge />}
+                          {showExec ? <StatusBadge ratio={row.pctExec!} tipoLancamento={row.tipo} /> : <SemMetaBadge />}
                         </td>
                       </tr>
                     )
