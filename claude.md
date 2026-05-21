@@ -56,3 +56,29 @@ Esse documento é a fonte da verdade sobre:
 ## Quando estiver em dúvida
 
 Se o documento `docs/conta-azul-api-guia.md` não cobrir o caso, **pare e pergunte ao Felipe antes de inventar**. Decisões sobre regime contábil (competência vs caixa em itens específicos como juros, descontos, perdas) podem afetar o relatório oficial e devem ser validadas.
+
+## ETL — onde está o log real
+
+O ETL roda em **GitHub Actions de hora em hora** em produção. 
+Logs reais estão no histórico de runs do Actions, não no repo.
+
+⚠️ O arquivo `etl_run.log` na raiz é HISTÓRICO LOCAL antigo — pode 
+conter erros (ex: invalid_grant) que NÃO refletem o estado de produção. 
+Ignore esse arquivo em qualquer análise de saúde do ETL.
+
+Para verificar saúde real do ETL, consulte:
+- ca.sync_log (tabela de log de cada sincronização)
+- ca.contas_financeiras.synced_at (timestamp da última atualização)
+- GitHub Actions → workflow de sync
+
+## Setup de worktree pra testes locais
+
+Worktrees criados não herdam `.env.local`. Pra testar localmente:
+
+```bash
+cp ../<main-checkout>/.env worktree/.env.local
+```
+
+Depois rode `npm run dev`. O bypass de auth dev é controlado por 
+[nome da flag — você confirma qual é]. Quando ativado, dashboard 
+abre sem login Google.
