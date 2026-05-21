@@ -30,3 +30,4 @@ debug_json/
 next-env.d.ts
 
 .env
+.claude/
