@@ -45,20 +45,20 @@ export function generateInsights(
     })
   }
 
-  // 2. Lançamentos atrasados — usa comparação exata com 'Atrasado' (igual ao KPI card)
+  // 2. Lançamentos em atraso — inclui 'Atrasado' e 'Aberto' já vencidos (Q6-6b)
   const hoje = new Date()
   const atrasados = op.filter(
     r =>
-      r.situacao === 'Atrasado' &&
       r.data &&
-      r.data < hoje
+      r.data < hoje &&
+      (r.situacao === 'Atrasado' || r.situacao === 'Aberto')
   )
   const totalAtrasado = atrasados.reduce((s, r) => s + r.valor, 0)
   if (atrasados.length > 0) {
     insights.push({
       type: 'danger',
       icon: '🔴',
-      title: `${atrasados.length} Lançamento(s) Atrasado(s)`,
+      title: `${atrasados.length} Lançamento(s) em Atraso`,
       body: `Total de ${fR(totalAtrasado)} em atraso. Verifique cobranças pendentes.`,
       val: fR(totalAtrasado),
     })

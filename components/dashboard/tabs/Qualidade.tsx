@@ -144,10 +144,14 @@ export function Qualidade({ data }: Props) {
   const semCat = useMemo(() => op.filter(r => !r.cat1 || r.cat1 === '(em branco)'), [op])
   const semCC  = useMemo(() => op.filter(r => !r.cc1  || r.cc1  === '(em branco)'), [op])
 
-  // Atrasados no período — mesma lógica do insights.ts (exata, não substring)
+  // Atrasados no período — inclui 'Atrasado' e 'Aberto' já vencidos
   const hoje = new Date()
   const atrasadosPeriodo = useMemo(
-    () => op.filter(r => r.situacao === 'Atrasado' && r.data && r.data < hoje),
+    () => op.filter(r =>
+      r.data && r.data < hoje &&
+      (r.situacao === 'Atrasado' || r.situacao === 'Aberto')
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [op],
   )
   const totalAtrasadoPeriodo = atrasadosPeriodo.reduce((s, r) => s + r.valor, 0)
