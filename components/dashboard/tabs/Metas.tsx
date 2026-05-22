@@ -430,11 +430,11 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
       }
       const l1PlanAbs = l2s.reduce((s, l2) => s + l2.children.reduce((ss, l3) => ss + (l3.planAbs ?? 0), 0), 0)
       const l1RealAbs = l2s.reduce((s, l2) => s + l2.children.reduce((ss, l3) => ss + (l3.realAbs ?? 0), 0), 0)
-      rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, planSigned, realSigned, planAbs: l1PlanAbs, realAbs: l1RealAbs, pctExec: l1PlanAbs > 0 ? l1RealAbs / l1PlanAbs : 0 })
+      rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, planSigned, realSigned, planAbs: l1PlanAbs, realAbs: l1RealAbs, pctExec: l1PlanAbs > 0 ? l1RealAbs / l1PlanAbs : 0, tipoLancamento: isReceita(l1) ? 'Receita' : 'Despesa' })
       if (exp1.has(l1)) {
         for (const { l2, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, children: l3s } of l2s) {
           if (cardFilter !== 'all' && !l3s.some(l3 => passesFilter(l3.pctExec, l3.hasMeta, isReceita(l1)))) continue
-          rows.push({ id: `l2::${l2Key}`, kind: 'l2', label: l2, l1Key: l1, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, pctExec: l2PlanAbs > 0 ? l2RealAbs / l2PlanAbs : null })
+          rows.push({ id: `l2::${l2Key}`, kind: 'l2', label: l2, l1Key: l1, l2Key, planSigned: p2, realSigned: r2, planAbs: l2PlanAbs, realAbs: l2RealAbs, pctExec: l2PlanAbs > 0 ? l2RealAbs / l2PlanAbs : null, tipoLancamento: isReceita(l1) ? 'Receita' : 'Despesa' })
           if (exp2.has(l2Key)) {
             for (const { l3, planSigned: p3, realSigned: r3, planAbs, realAbs, pctExec, hasMeta } of l3s) {
               if (!passesFilter(pctExec, hasMeta, isReceita(l1))) continue
