@@ -65,12 +65,12 @@ export async function GET() {
 
       // ── Atrasados Globais (não filtrado por período) ──────────────────────────
       const atrasadosRecRes = await client.query<{ count: string; total: string }>(`
-        SELECT COUNT(*) AS count, COALESCE(SUM(valor_liquido), 0) AS total
+        SELECT COUNT(*) AS count, COALESCE(SUM(valor_aberto), 0) AS total
         FROM ca.contas_receber
         WHERE status = 'Atrasado'
       `)
       const atrasadosPagRes = await client.query<{ count: string; total: string }>(`
-        SELECT COUNT(*) AS count, COALESCE(SUM(valor_liquido), 0) AS total
+        SELECT COUNT(*) AS count, COALESCE(SUM(valor_aberto), 0) AS total
         FROM ca.contas_pagar
         WHERE status = 'Atrasado'
       `)
