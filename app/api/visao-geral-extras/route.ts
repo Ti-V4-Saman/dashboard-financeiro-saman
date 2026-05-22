@@ -136,43 +136,48 @@ export async function GET(request: Request) {
       if (de && ate) {
         const { prevDe, prevAte } = prevPeriod(de, ate)
 
-        // Expressões de data por regime
-        const recExpr  = regime === 'caixa' ? 'data_recebimento'                : 'COALESCE(data_competencia, data_vencimento)'
-        const pagExpr  = regime === 'caixa' ? 'data_pagamento'
-                        : 'COALESCE(data_competencia, data_vencimento)'
-        const recWhere = regime === 'caixa' ? "status = 'Quitado'"
-                        : "status NOT IN ('Cancelado', 'Renegociado')"
-        const pagWhere = recWhere
+        // Em CAIXA, usa ca.baixas (pagamento efetivo); cnt = DISTINCT lançamento.
+        // Em COMPETÊNCIA, usa ca.contas_receber direto com COALESCE(competencia, vencimento).
+        const recQ = (caixa: boolean) => caixa ? `
+            SELECT COUNT(DISTINCT b.evento_id) AS cnt,
+                   COALESCE(SUM(b.valor_bruto), 0) AS total
+            FROM ca.baixas b
+            JOIN ca.contas_receber cr ON cr.id = b.evento_id
+            WHERE b.tipo = 'RECEITA'
+              AND cr.status NOT IN ('Cancelado', 'Renegociado')
+              AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+              AND b.data_pagamento BETWEEN $1 AND $2
+        ` : `
+            SELECT COUNT(*) AS cnt,
+                   COALESCE(SUM(total), 0) AS total
+            FROM ca.contas_receber
+            WHERE status NOT IN ('Cancelado', 'Renegociado')
+              AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+              AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
+        `
 
+        const pagQ = (caixa: boolean) => caixa ? `
+            SELECT COALESCE(SUM(b.valor_bruto), 0) AS total
+            FROM ca.baixas b
+            JOIN ca.contas_pagar cp ON cp.id = b.evento_id
+            WHERE b.tipo = 'DESPESA'
+              AND cp.status NOT IN ('Cancelado', 'Renegociado')
+              AND COALESCE(cp.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+              AND b.data_pagamento BETWEEN $1 AND $2
+        ` : `
+            SELECT COALESCE(SUM(total), 0) AS total
+            FROM ca.contas_pagar
+            WHERE status NOT IN ('Cancelado', 'Renegociado')
+              AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+              AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
+        `
+
+        const isCaixa = regime === 'caixa'
         const [curRec, curDesp, prevRec, prevDesp] = await Promise.all([
-          // Receitas atuais
-          client.query<{ cnt: string; total: string }>(`
-            SELECT COUNT(*) AS cnt, COALESCE(SUM(total), 0) AS total
-            FROM ca.contas_receber
-            WHERE ${recWhere}
-              AND ${recExpr} BETWEEN $1 AND $2
-          `, [de, ate]),
-          // Despesas atuais
-          client.query<{ total: string }>(`
-            SELECT COALESCE(SUM(total), 0) AS total
-            FROM ca.contas_pagar
-            WHERE ${pagWhere}
-              AND ${pagExpr} BETWEEN $1 AND $2
-          `, [de, ate]),
-          // Receitas período anterior
-          client.query<{ cnt: string; total: string }>(`
-            SELECT COUNT(*) AS cnt, COALESCE(SUM(total), 0) AS total
-            FROM ca.contas_receber
-            WHERE ${recWhere}
-              AND ${recExpr} BETWEEN $1 AND $2
-          `, [prevDe, prevAte]),
-          // Despesas período anterior
-          client.query<{ total: string }>(`
-            SELECT COALESCE(SUM(total), 0) AS total
-            FROM ca.contas_pagar
-            WHERE ${pagWhere}
-              AND ${pagExpr} BETWEEN $1 AND $2
-          `, [prevDe, prevAte]),
+          client.query<{ cnt: string; total: string }>(recQ(isCaixa), [de, ate]),
+          client.query<{ total: string }>          (pagQ(isCaixa), [de, ate]),
+          client.query<{ cnt: string; total: string }>(recQ(isCaixa), [prevDe, prevAte]),
+          client.query<{ total: string }>          (pagQ(isCaixa), [prevDe, prevAte]),
         ])
 
         // Ticket médio
@@ -206,35 +211,54 @@ export async function GET(request: Request) {
       // 4a. Indicadores (DRE resumida do período)
       if (de && ate) {
         try {
-          const recDateExpr = regime === 'caixa' ? 'data_recebimento'                       : 'COALESCE(data_competencia, data_vencimento)'
-          const pagDateExpr = regime === 'caixa' ? 'data_pagamento'                         : 'COALESCE(data_competencia, data_vencimento)'
-          const recWhere    = regime === 'caixa'
-            ? `status = 'Quitado' AND status NOT IN ('Cancelado','Renegociado') AND data_recebimento BETWEEN $1 AND $2`
-            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
-          const pagWhere    = regime === 'caixa'
-            ? `status = 'Quitado' AND status NOT IN ('Cancelado','Renegociado') AND data_pagamento BETWEEN $1 AND $2`
-            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
-
-          const indRes = await client.query<{ tipo: string; cat_nome: string; valor: string }>(`
+          // CAIXA → fonte = ca.baixas (uma linha por baixa, valor = valor_bruto)
+          // COMPETÊNCIA → fonte = ca.contas_receber/pagar com COALESCE(comp, venc)
+          const indSql = regime === 'caixa' ? `
             SELECT
               t.tipo,
               COALESCE(cat.nome, '') AS cat_nome,
-              COALESCE(SUM(COALESCE(t.valor_pago, t.total)), 0)::numeric AS valor
+              COALESCE(SUM(t.valor), 0)::numeric AS valor
             FROM (
-              SELECT 'Receita' AS tipo, categoria_id, total, valor_pago, origem,
-                     ${recDateExpr} AS data
-              FROM ca.contas_receber
-              WHERE ${recWhere}
+              SELECT 'Receita' AS tipo, cr.categoria_id AS categoria_id,
+                     b.valor_bruto AS valor, COALESCE(cr.origem, '') AS origem
+              FROM ca.baixas b
+              JOIN ca.contas_receber cr ON cr.id = b.evento_id
+              WHERE b.tipo = 'RECEITA'
+                AND cr.status NOT IN ('Cancelado','Renegociado')
+                AND b.data_pagamento BETWEEN $1 AND $2
               UNION ALL
-              SELECT 'Despesa', categoria_id, total, valor_pago, origem,
-                     ${pagDateExpr} AS data
-              FROM ca.contas_pagar
-              WHERE ${pagWhere}
+              SELECT 'Despesa', cp.categoria_id,
+                     b.valor_bruto, COALESCE(cp.origem, '')
+              FROM ca.baixas b
+              JOIN ca.contas_pagar cp ON cp.id = b.evento_id
+              WHERE b.tipo = 'DESPESA'
+                AND cp.status NOT IN ('Cancelado','Renegociado')
+                AND b.data_pagamento BETWEEN $1 AND $2
             ) t
             LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
-            WHERE COALESCE(t.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
             GROUP BY t.tipo, cat.nome
-          `, [de, ate])
+          ` : `
+            SELECT
+              t.tipo,
+              COALESCE(cat.nome, '') AS cat_nome,
+              COALESCE(SUM(t.total), 0)::numeric AS valor
+            FROM (
+              SELECT 'Receita' AS tipo, categoria_id, total, COALESCE(origem,'') AS origem
+              FROM ca.contas_receber
+              WHERE status NOT IN ('Cancelado','Renegociado')
+                AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
+              UNION ALL
+              SELECT 'Despesa', categoria_id, total, COALESCE(origem,'')
+              FROM ca.contas_pagar
+              WHERE status NOT IN ('Cancelado','Renegociado')
+                AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
+            ) t
+            LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
+            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            GROUP BY t.tipo, cat.nome
+          `
+          const indRes = await client.query<{ tipo: string; cat_nome: string; valor: string }>(indSql, [de, ate])
 
           // numPrefix — extracts leading numeric prefix (e.g. "4.1.01 Foo" → 4.1)
           const numPfx = (s: string): number => {
@@ -325,12 +349,52 @@ export async function GET(request: Request) {
       // 4c. Notas Fiscais (respeita período)
       if (de && ate) {
         try {
-          const recDateExpr = regime === 'caixa'
-            ? 'data_recebimento'
-            : 'COALESCE(data_competencia, data_vencimento)'
-          const recWhere = regime === 'caixa'
-            ? `status = 'Quitado' AND data_recebimento BETWEEN $1 AND $2`
-            : `status NOT IN ('Cancelado','Renegociado') AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2`
+          // "Lançamentos receita" e "Pago sem nota" — fonte depende do regime
+          const lancRecQ = regime === 'caixa' ? `
+            SELECT COUNT(DISTINCT b.evento_id) AS total
+            FROM ca.baixas b
+            JOIN ca.contas_receber cr ON cr.id = b.evento_id
+            WHERE b.tipo = 'RECEITA'
+              AND cr.status NOT IN ('Cancelado','Renegociado')
+              AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+              AND b.data_pagamento BETWEEN $1 AND $2
+          ` : `
+            SELECT COUNT(*) AS total
+            FROM ca.contas_receber
+            WHERE status NOT IN ('Cancelado','Renegociado')
+              AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+              AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
+          `
+
+          // Pago sem nota: sempre conta apenas o que foi efetivamente pago
+          // (faz sentido apenas para receitas com pagamento — Quitado / com baixa)
+          const semNotaQ = regime === 'caixa' ? `
+            SELECT
+              COUNT(DISTINCT b.evento_id)            AS qtd,
+              COALESCE(SUM(b.valor_bruto), 0)        AS valor
+            FROM ca.baixas b
+            JOIN ca.contas_receber cr ON cr.id = b.evento_id
+            WHERE b.tipo = 'RECEITA'
+              AND cr.status NOT IN ('Cancelado','Renegociado')
+              AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+              AND b.data_pagamento BETWEEN $1 AND $2
+              AND NOT EXISTS (
+                SELECT 1 FROM ca.notas_fiscais nf
+                WHERE nf.venda_id = cr.id_venda AND nf.status = 'EMITIDA'
+              )
+          ` : `
+            SELECT
+              COUNT(*)                                              AS qtd,
+              COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)   AS valor
+            FROM ca.contas_receber cr
+            WHERE cr.status = 'Quitado'
+              AND COALESCE(cr.data_competencia, cr.data_vencimento) BETWEEN $1 AND $2
+              AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+              AND NOT EXISTS (
+                SELECT 1 FROM ca.notas_fiscais nf
+                WHERE nf.venda_id = cr.id_venda AND nf.status = 'EMITIDA'
+              )
+          `
 
           const [nfRes, crRes, semNotaRes] = await Promise.all([
             // Notas emitidas + canceladas no período
@@ -347,29 +411,8 @@ export async function GET(request: Request) {
               WHERE data_emissao BETWEEN $1 AND $2
             `, [de, ate]),
 
-            // Lançamentos receita no período
-            client.query<{ total: string }>(`
-              SELECT COUNT(*) AS total
-              FROM ca.contas_receber
-              WHERE ${recWhere}
-                AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
-            `, [de, ate]),
-
-            // Pago sem nota (receita quitada sem NF vinculada)
-            client.query<{ qtd: string; valor: string }>(`
-              SELECT
-                COUNT(*)                                                AS qtd,
-                COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)    AS valor
-              FROM ca.contas_receber cr
-              WHERE cr.status = 'Quitado'
-                AND ${regime === 'caixa' ? 'cr.data_recebimento' : 'COALESCE(cr.data_competencia, cr.data_vencimento)'} BETWEEN $1 AND $2
-                AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
-                AND NOT EXISTS (
-                  SELECT 1 FROM ca.notas_fiscais nf
-                  WHERE nf.venda_id = cr.id_venda
-                    AND nf.status = 'EMITIDA'
-                )
-            `, [de, ate]),
+            client.query<{ total: string }>(lancRecQ, [de, ate]),
+            client.query<{ qtd: string; valor: string }>(semNotaQ, [de, ate]),
           ])
 
           const nfRow = nfRes.rows[0]
