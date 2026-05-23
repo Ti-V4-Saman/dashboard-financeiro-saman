@@ -1,10 +1,13 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { fR, parseCatHier, getL2Label } from '@/lib/utils'
 import { DRE_LEAVES, NON_DRE_ROWS, KPI_ROWS, ALL_CATEGORY_LEAVES } from '@/lib/categoryTree'
+import { MetaReplicateModal } from '@/components/dashboard/metas/MetaReplicateModal'
+import { MetaBulkEditModal, type BulkUpdate } from '@/components/dashboard/metas/MetaBulkEditModal'
+import { MetaImportModal } from '@/components/dashboard/metas/MetaImportModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -143,6 +146,23 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
   const [editing, setEditing] = useState<Partial<Meta> & { tipo_valor?: 'reais' | 'percentual' } | null>(null)
   const [saving, setSaving] = useState(false)
 
+  // ── Estado do Gerenciador ──────────────────────────────────────────────────
+  const [searchManage, setSearchManage]   = useState('')
+  const [debSearch, setDebSearch]         = useState('')
+  const [selectedIds, setSelectedIds]     = useState<Set<string>>(new Set())
+  const [showReplicateFor, setShowReplicateFor] = useState<Meta | null>(null)
+  const [showBulk, setShowBulk]           = useState(false)
+  const [showImport, setShowImport]       = useState(false)
+  const searchDebRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (searchDebRef.current) clearTimeout(searchDebRef.current)
+    searchDebRef.current = setTimeout(() => setDebSearch(searchManage), 200)
+    return () => {
+      if (searchDebRef.current) clearTimeout(searchDebRef.current)
+    }
+  }, [searchManage])
+
   // Sanfona — set de EXPANDIDOS (vazio = tudo fechado por padrão)
   const [exp1, setExp1] = useState<Set<string>>(new Set())
   const [exp2, setExp2] = useState<Set<string>>(new Set())
@@ -188,10 +208,96 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
       })
       mutate()
       setEditing(null)
+      // Abre modal de replicar SE for criação nova (não edição) com valor > 0
+      const eraNovo = !editing.id
+      if (eraNovo && payload.valor_planejado > 0) {
+        setShowReplicateFor(payload as Meta)
+      }
     } catch {
       alert('Erro ao salvar meta')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // ── Bulk handlers ──────────────────────────────────────────────────────────
+
+  const replicarMeta = async (base: Meta, meses: string[], _sobrescrever: boolean) => {
+    if (meses.length === 0) return
+    try {
+      const novas = meses.map(mes => ({
+        ...base,
+        id: crypto.randomUUID(),
+        mes_referencia: mes,
+        criado_em: new Date().toISOString(),
+      }))
+      const res = await fetch('/api/metas/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ metas: novas }),
+      })
+      if (!res.ok) throw new Error('bulk failed')
+      await mutate()
+    } catch {
+      alert('Erro ao replicar metas')
+    }
+  }
+
+  const aplicarBulkEdit = async (updates: BulkUpdate) => {
+    const ids = Array.from(selectedIds)
+    const alvo = metas.filter(m => ids.includes(m.id))
+    const atualizados = alvo.map(m => {
+      const next = { ...m }
+      if (updates.valor_planejado != null) next.valor_planejado = updates.valor_planejado
+      if (updates.tipo_lancamento)         next.tipo_lancamento = updates.tipo_lancamento
+      if (updates.mes_referencia)          next.mes_referencia  = updates.mes_referencia
+      if (updates.tipo_valor) {
+        // tipo_valor é gravado na observacao
+        const sufixo = 'tipo_valor:percentual'
+        const obsLimpa = (next.observacao || '').replace(sufixo, '').trim()
+        next.observacao = updates.tipo_valor === 'percentual'
+          ? (obsLimpa ? `${obsLimpa} ${sufixo}` : sufixo)
+          : obsLimpa
+      }
+      return next
+    })
+    try {
+      const res = await fetch('/api/metas/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ metas: atualizados }),
+      })
+      if (!res.ok) throw new Error('bulk update failed')
+      await mutate()
+      setSelectedIds(new Set())
+    } catch {
+      alert('Erro ao atualizar metas em massa')
+    }
+  }
+
+  const excluirSelecionadas = async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`Excluir ${selectedIds.size} meta(s) selecionada(s)?`)) return
+    try {
+      const ids = Array.from(selectedIds).join(',')
+      await fetch(`/api/metas/bulk?ids=${ids}`, { method: 'DELETE' })
+      await mutate()
+      setSelectedIds(new Set())
+    } catch {
+      alert('Erro ao excluir')
+    }
+  }
+
+  const importarMetas = async (novas: Omit<Meta, 'criado_em'>[]) => {
+    try {
+      const res = await fetch('/api/metas/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ metas: novas }),
+      })
+      if (!res.ok) throw new Error('import failed')
+      const data = await res.json()
+      await mutate()
+      alert(`Importação concluída: ${data.inserted} criadas, ${data.updated} atualizadas${data.errors?.length ? `, ${data.errors.length} com erro` : ''}.`)
+    } catch {
+      alert('Erro na importação')
     }
   }
 
@@ -221,6 +327,20 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     () => metas.filter(m => m.mes_referencia >= fromMonth && m.mes_referencia <= toMonth),
     [metas, fromMonth, toMonth],
   )
+
+  // ── Busca textual no Gerenciador (filtra em todas as colunas) ──────────────
+  const metasFiltradas = useMemo(() => {
+    if (!debSearch.trim()) return metas
+    const q = debSearch.toLowerCase().trim()
+    return metas.filter(m =>
+      (m.mes_referencia || '').toLowerCase().includes(q) ||
+      (m.categoria      || '').toLowerCase().includes(q) ||
+      (m.tipo_lancamento|| '').toLowerCase().includes(q) ||
+      (m.observacao     || '').toLowerCase().includes(q) ||
+      String(m.valor_planejado || '').includes(q) ||
+      fR(m.valor_planejado).toLowerCase().includes(q),
+    )
+  }, [metas, debSearch])
 
   const enriched = useMemo(
     () =>
@@ -758,15 +878,54 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
 
         {/* Lista de metas cadastradas */}
         <div style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ padding: '12px 16px', background: 'var(--surf2)', borderBottom: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Metas cadastradas ({metas.length})</span>
+          {/* Header — título + busca + botões */}
+          <div style={{ padding: '12px 16px', background: 'var(--surf2)', borderBottom: '1px solid var(--line2)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Metas cadastradas ({metasFiltradas.length}{debSearch && metasFiltradas.length !== metas.length ? ` de ${metas.length}` : ''})</span>
+            <input
+              type="text"
+              value={searchManage}
+              onChange={e => setSearchManage(e.target.value)}
+              placeholder="Buscar por mês, categoria, tipo, valor, observação..."
+              style={{ flex: 1, minWidth: 200, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--line2)', fontSize: 11, background: 'var(--surface)' }}
+            />
+            <button onClick={() => setShowImport(true)} style={{ background: 'var(--surf2)', color: 'var(--ink2)', border: '1px solid var(--line2)', borderRadius: 6, padding: '5px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              ↑ Importar
+            </button>
             <button onClick={() => setEditing({ mes_referencia: fromMonth, tipo_valor: 'reais' })} style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
               + Nova Meta
             </button>
           </div>
+
+          {/* Barra de ações em massa — só aparece quando há seleção */}
+          {selectedIds.size > 0 && (
+            <div style={{ padding: '10px 16px', background: 'var(--brand-l, #fff4e6)', borderBottom: '1px solid var(--line2)', display: 'flex', alignItems: 'center', gap: 12, fontSize: 11 }}>
+              <strong>{selectedIds.size} meta(s) selecionada(s)</strong>
+              <button onClick={() => setShowBulk(true)} style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                ✎ Editar em massa
+              </button>
+              <button onClick={excluirSelecionadas} style={{ background: 'var(--surface)', color: 'var(--red)', border: '1px solid var(--red)', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                ✕ Excluir selecionadas
+              </button>
+              <button onClick={() => setSelectedIds(new Set())} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--ink3)', cursor: 'pointer', fontSize: 11 }}>
+                Limpar seleção
+              </button>
+            </div>
+          )}
+
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr style={{ background: 'var(--surf2)', borderBottom: '1px solid var(--line2)' }}>
+                <th style={{ padding: '10px 8px 10px 16px', width: 32 }}>
+                  <input
+                    type="checkbox"
+                    checked={metasFiltradas.length > 0 && metasFiltradas.every(m => selectedIds.has(m.id))}
+                    onChange={e => {
+                      if (e.target.checked) setSelectedIds(new Set(metasFiltradas.map(m => m.id)))
+                      else setSelectedIds(new Set())
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  />
+                </th>
                 <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Mês</th>
                 <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Tipo</th>
                 <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--ink3)' }}>Categoria</th>
@@ -776,22 +935,40 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
             </thead>
             <tbody>
               {metas.length === 0 && (
-                <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: 'var(--ink3)' }}>Nenhuma meta cadastrada. Use o formulário acima para adicionar.</td></tr>
+                <tr><td colSpan={6} style={{ padding: 32, textAlign: 'center', color: 'var(--ink3)' }}>Nenhuma meta cadastrada. Use o formulário acima para adicionar.</td></tr>
               )}
-              {metas.map(m => (
-                <tr key={m.id} style={{ borderBottom: '1px solid var(--line)' }} className="hover:bg-[var(--surf2)]">
-                  <td style={{ padding: '9px 16px', color: 'var(--ink2)' }}>{m.mes_referencia}</td>
-                  <td style={{ padding: '9px 16px' }}><span style={{ color: m.tipo_lancamento === 'Receita' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{m.tipo_lancamento}</span></td>
-                  <td style={{ padding: '9px 16px', color: 'var(--ink)', maxWidth: 340 }}>{m.categoria}</td>
-                  <td style={{ padding: '9px 16px', textAlign: 'right', fontWeight: 700, color: 'var(--ink)' }}>{fR(m.valor_planejado)}</td>
-                  <td style={{ padding: '9px 16px', textAlign: 'center' }}>
-                    <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                      <button onClick={() => { setEditing({ ...m, tipo_valor: m.observacao?.includes('tipo_valor:percentual') ? 'percentual' : 'reais' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Editar</button>
-                      <button onClick={() => deleteMeta(m.id)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Excluir</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {metas.length > 0 && metasFiltradas.length === 0 && (
+                <tr><td colSpan={6} style={{ padding: 32, textAlign: 'center', color: 'var(--ink3)' }}>Nenhuma meta corresponde à busca &quot;{debSearch}&quot;.</td></tr>
+              )}
+              {metasFiltradas.map(m => {
+                const checked = selectedIds.has(m.id)
+                return (
+                  <tr key={m.id} style={{ borderBottom: '1px solid var(--line)', background: checked ? 'var(--brand-l, #fff4e6)' : undefined }} className="hover:bg-[var(--surf2)]">
+                    <td style={{ padding: '9px 8px 9px 16px' }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setSelectedIds(prev => {
+                          const n = new Set(prev)
+                          n.has(m.id) ? n.delete(m.id) : n.add(m.id)
+                          return n
+                        })}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </td>
+                    <td style={{ padding: '9px 16px', color: 'var(--ink2)' }}>{m.mes_referencia}</td>
+                    <td style={{ padding: '9px 16px' }}><span style={{ color: m.tipo_lancamento === 'Receita' ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{m.tipo_lancamento}</span></td>
+                    <td style={{ padding: '9px 16px', color: 'var(--ink)', maxWidth: 340 }}>{m.categoria}</td>
+                    <td style={{ padding: '9px 16px', textAlign: 'right', fontWeight: 700, color: 'var(--ink)' }}>{fR(m.valor_planejado)}</td>
+                    <td style={{ padding: '9px 16px', textAlign: 'center' }}>
+                      <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                        <button onClick={() => { setEditing({ ...m, tipo_valor: m.observacao?.includes('tipo_valor:percentual') ? 'percentual' : 'reais' }); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Editar</button>
+                        <button onClick={() => deleteMeta(m.id)} style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Excluir</button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -820,6 +997,34 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
       {isLoading && metas.length === 0
         ? <div style={{ color: 'var(--ink3)', fontSize: 12, padding: '32px 0', textAlign: 'center' }}>Carregando metas...</div>
         : (view === 'dash' ? renderDashboard() : renderManage())}
+
+      {/* ── Modais ──────────────────────────────────────────────────────── */}
+      {showReplicateFor && (
+        <MetaReplicateModal
+          baseMeta={showReplicateFor}
+          metasExistentes={metas}
+          onClose={() => setShowReplicateFor(null)}
+          onReplicate={async (meses, sobrescrever) => {
+            await replicarMeta(showReplicateFor, meses, sobrescrever)
+          }}
+        />
+      )}
+
+      {showBulk && selectedIds.size > 0 && (
+        <MetaBulkEditModal
+          selecionadas={metas.filter(m => selectedIds.has(m.id))}
+          onClose={() => setShowBulk(false)}
+          onApply={aplicarBulkEdit}
+        />
+      )}
+
+      {showImport && (
+        <MetaImportModal
+          categoryLeaves={ALL_CATEGORY_LEAVES.map(l => ({ fullName: l.fullName, tipo: l.tipo }))}
+          onClose={() => setShowImport(false)}
+          onImport={importarMetas}
+        />
+      )}
     </div>
   )
 }
