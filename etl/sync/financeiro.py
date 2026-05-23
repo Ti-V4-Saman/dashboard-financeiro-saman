@@ -68,13 +68,14 @@ def _get_sync_params(mode: str = "incremental", style: str = "finance") -> Dict[
     # Em incremental, adiciona janela de 30 dias por data_alteracao —
     # capturar TUDO que mudou (criado, editado, pago, cancelado, etc).
     if mode != "full":
-        # ISO 8601 com fuso GMT-3 (horário oficial CA)
-        now_utc  = datetime.now(timezone.utc)
-        gmt3     = timezone(timedelta(hours=-3))
-        alt_ate  = now_utc.astimezone(gmt3)
-        alt_de   = alt_ate - timedelta(days=30)
-        params["data_alteracao_de"]  = alt_de.strftime("%Y-%m-%dT%H:%M:%S%z")
-        params["data_alteracao_ate"] = alt_ate.strftime("%Y-%m-%dT%H:%M:%S%z")
+        # Formato ISO 8601 SEM timezone, em horário GMT-3 (horário oficial CA).
+        # A API rejeita offset (-0300 ou -03:00) — exige formato naive como
+        # "2025-10-20T07:59:59". Convertemos UTC → GMT-3 e strippamos o tzinfo.
+        gmt3      = timezone(timedelta(hours=-3))
+        alt_ate   = datetime.now(timezone.utc).astimezone(gmt3).replace(tzinfo=None)
+        alt_de    = alt_ate - timedelta(days=30)
+        params["data_alteracao_de"]  = alt_de.strftime("%Y-%m-%dT%H:%M:%S")
+        params["data_alteracao_ate"] = alt_ate.strftime("%Y-%m-%dT%H:%M:%S")
 
     return params
 
