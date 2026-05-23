@@ -28,14 +28,20 @@ logger = logging.getLogger(__name__)
 
 def _get_sync_params(mode: str = "incremental", style: str = "finance") -> Dict[str, str]:
     today = date.today()
-    year_end = date(today.year, 12, 31)
+    # end_date estende-se 2 anos para o futuro para capturar parcelas com
+    # vencimento em ano civil futuro (ex: venda 12x parcelada cujas últimas
+    # parcelas vencem ano que vem mas são pagas antecipadamente).
+    # Bug confirmado em 22/mai/2026: Venda 1521 (12x) teve parcelas 10/12 e
+    # 11/12 (venc jan/fev 2027) pagas em abril/2026 — baixas nunca chegavam
+    # ao banco porque o ETL filtrava data_vencimento_ate até 2026-12-31.
+    far_future = date(today.year + 2, 12, 31)
 
     if mode == "full":
         start_date = "2015-01-01"
     else:
         start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    end_date = year_end.strftime("%Y-%m-%d")
+    end_date = far_future.strftime("%Y-%m-%d")
 
     if style == "sales":
         return {"data_inicio": start_date, "data_fim": end_date}
@@ -740,7 +746,10 @@ def sync_baixas(
             # Sem isso, baixas de parcelas vencidas há > 30 dias nunca chegam ao banco.
             alt_threshold = datetime.now(timezone.utc) - timedelta(days=30)
 
-        end_date = date(today.year, 12, 31).strftime("%Y-%m-%d")
+        # end_date estende-se 2 anos para o futuro pelos mesmos motivos
+        # documentados em _get_sync_params (parcelas com vencimento em ano
+        # civil futuro pagas antecipadamente).
+        end_date = date(today.year + 2, 12, 31).strftime("%Y-%m-%d")
 
         # Coleta IDs de parcelas a receber e a pagar no periodo
         conn = ensure_connection(conn)
