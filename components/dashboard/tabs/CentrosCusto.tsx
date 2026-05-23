@@ -10,7 +10,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts'
-import type { Lancamento } from '@/lib/types'
+import type { Lancamento, Filters } from '@/lib/types'
 import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -18,12 +18,22 @@ import { Search } from 'lucide-react'
 
 interface Props {
   data: Lancamento[]
+  filters?: Filters
 }
 
-export function CentrosCusto({ data }: Props) {
+export function CentrosCusto({ data, filters }: Props) {
   const [search, setSearch] = useState('')
 
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+  // Caixa  → só Quitado (cada linha é baixa, pagamento efetivo)
+  // Competência → todos status válidos (reconhecimento na competência)
+  const op = useMemo(() => {
+    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
+    return data.filter(r => {
+      if (r.isTransfer) return false
+      if (isCaixa) return r.situacao === 'Quitado'
+      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
+    })
+  }, [data, filters?.regime])
 
   // Aggregate by CC
   const ccMap = useMemo(() => {

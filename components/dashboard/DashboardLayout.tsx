@@ -94,8 +94,8 @@ export function DashboardLayout({
           >
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
-            {activeTab === 'cc'          && <CentrosCusto data={filteredData} />}
-            {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} />}
+            {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
+            {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
             {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} />}
