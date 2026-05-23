@@ -14,7 +14,10 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 60     # ETL dura ~44min; margem de segurança
+    timeout-minutes: 240    # Aumentado de 60 para 240: durante a fase de
+                            # transição (CRs com data_atualizacao NULL sendo
+                            # re-sincronizadas em lotes pelo fallback), runs
+                            # podem ser bem mais longos que os ~44min normais.
 
     steps:
       - name: Checkout repository
