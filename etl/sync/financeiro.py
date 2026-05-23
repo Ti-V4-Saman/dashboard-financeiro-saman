@@ -563,21 +563,37 @@ def sync_parcelas(
         else:
             alt_threshold = datetime.now(timezone.utc) - timedelta(days=30)
 
+        # Lote máximo de CRs/CPs com data_atualizacao IS NULL processados por
+        # run — evita timeout do GitHub Actions. Cada chamada API ao endpoint
+        # /parcelas/{id} custa ~0.5s; 7.776 chamadas totais (CRs+CPs) levariam
+        # ~65min só nessa fase, estourando o limite default de 60min.
+        # Com LIMIT 500 por run + cron de hora em hora, a backfill termina
+        # em ~16 runs (16h).
+        NULL_BATCH_LIMIT = 500
+
         # ── Parcelas a receber ──────────────────────────────────────────────
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
             if alt_threshold is None:
                 cur.execute("SELECT id FROM ca.contas_receber")
+                ids_receber = [row[0] for row in cur.fetchall()]
             else:
-                # OR data_atualizacao IS NULL — captura CRs que ainda não tiveram
-                # o campo populado (transição). Pode ser removido depois que
-                # todas as CRs forem re-sincronizadas pelo menos 1 vez.
+                # 1) CRs alteradas recentemente (sem limite — geralmente poucas)
                 cur.execute(
-                    """SELECT id FROM ca.contas_receber
-                       WHERE data_atualizacao >= %s OR data_atualizacao IS NULL""",
+                    "SELECT id FROM ca.contas_receber WHERE data_atualizacao >= %s",
                     (alt_threshold,),
                 )
-            ids_receber = [row[0] for row in cur.fetchall()]
+                ids_receber = [row[0] for row in cur.fetchall()]
+                # 2) Até NULL_BATCH_LIMIT CRs com data_atualizacao IS NULL
+                #    Mais antigas primeiro (synced_at ASC) para progresso linear.
+                cur.execute(
+                    """SELECT id FROM ca.contas_receber
+                       WHERE data_atualizacao IS NULL
+                       ORDER BY synced_at ASC NULLS FIRST
+                       LIMIT %s""",
+                    (NULL_BATCH_LIMIT,),
+                )
+                ids_receber.extend(row[0] for row in cur.fetchall())
 
         logger.info("Parcelas a receber: %d eventos a processar", len(ids_receber))
         buf_receber: List[Dict[str, Any]] = []
@@ -618,13 +634,21 @@ def sync_parcelas(
         with conn.cursor() as cur:
             if alt_threshold is None:
                 cur.execute("SELECT id FROM ca.contas_pagar")
+                ids_pagar = [row[0] for row in cur.fetchall()]
             else:
                 cur.execute(
-                    """SELECT id FROM ca.contas_pagar
-                       WHERE data_atualizacao >= %s OR data_atualizacao IS NULL""",
+                    "SELECT id FROM ca.contas_pagar WHERE data_atualizacao >= %s",
                     (alt_threshold,),
                 )
-            ids_pagar = [row[0] for row in cur.fetchall()]
+                ids_pagar = [row[0] for row in cur.fetchall()]
+                cur.execute(
+                    """SELECT id FROM ca.contas_pagar
+                       WHERE data_atualizacao IS NULL
+                       ORDER BY synced_at ASC NULLS FIRST
+                       LIMIT %s""",
+                    (NULL_BATCH_LIMIT,),
+                )
+                ids_pagar.extend(row[0] for row in cur.fetchall())
 
         logger.info("Parcelas a pagar: %d eventos a processar", len(ids_pagar))
         buf_pagar: List[Dict[str, Any]] = []
@@ -770,6 +794,9 @@ def sync_baixas(
         # Coleta IDs de parcelas a receber e a pagar
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
+            # Mesmo padrão de LIMIT 500 IS NULL por run (anti-timeout)
+            NULL_BATCH_LIMIT_BAIXAS = 500
+
             if alt_threshold is None:
                 cur.execute("SELECT id FROM ca.parcelas_receber")
                 ids_receber = [row[0] for row in cur.fetchall()]
@@ -777,21 +804,33 @@ def sync_baixas(
                 cur.execute("SELECT id FROM ca.parcelas_pagar")
                 ids_pagar = [row[0] for row in cur.fetchall()]
             else:
-                # Apenas parcelas com alteração recente OU sem data_alteracao
-                # populada (transição — pode ser removido após 1ª re-sync)
                 cur.execute(
-                    """SELECT id FROM ca.parcelas_receber
-                       WHERE data_alteracao >= %s OR data_alteracao IS NULL""",
+                    "SELECT id FROM ca.parcelas_receber WHERE data_alteracao >= %s",
                     (alt_threshold,),
                 )
                 ids_receber = [row[0] for row in cur.fetchall()]
+                cur.execute(
+                    """SELECT id FROM ca.parcelas_receber
+                       WHERE data_alteracao IS NULL
+                       ORDER BY synced_at ASC NULLS FIRST
+                       LIMIT %s""",
+                    (NULL_BATCH_LIMIT_BAIXAS,),
+                )
+                ids_receber.extend(row[0] for row in cur.fetchall())
 
                 cur.execute(
-                    """SELECT id FROM ca.parcelas_pagar
-                       WHERE data_alteracao >= %s OR data_alteracao IS NULL""",
+                    "SELECT id FROM ca.parcelas_pagar WHERE data_alteracao >= %s",
                     (alt_threshold,),
                 )
                 ids_pagar = [row[0] for row in cur.fetchall()]
+                cur.execute(
+                    """SELECT id FROM ca.parcelas_pagar
+                       WHERE data_alteracao IS NULL
+                       ORDER BY synced_at ASC NULLS FIRST
+                       LIMIT %s""",
+                    (NULL_BATCH_LIMIT_BAIXAS,),
+                )
+                ids_pagar.extend(row[0] for row in cur.fetchall())
 
         all_ids = ids_receber + ids_pagar
         logger.info("sync_baixas: %d parcelas a processar (%d receber + %d pagar)",
