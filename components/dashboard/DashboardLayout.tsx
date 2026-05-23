@@ -12,6 +12,7 @@ import { Comparativo } from './tabs/Comparativo'
 import { Qualidade } from './tabs/Qualidade'
 import { Lancamentos } from './tabs/Lancamentos'
 import { MetasTab } from './tabs/Metas'
+import { NotasFiscais } from './tabs/NotasFiscais'
 import { UsuariosTab } from './tabs/Usuarios'
 import type { Lancamento, Filters } from '@/lib/types'
 
@@ -99,6 +100,7 @@ export function DashboardLayout({
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
             {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} />}
+            {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
           </div>
         )}
