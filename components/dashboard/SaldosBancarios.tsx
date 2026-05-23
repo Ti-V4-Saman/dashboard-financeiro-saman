@@ -17,8 +17,6 @@ export interface ContaSaldo {
 export interface SaldosData {
   contas: ContaSaldo[]
   consolidado: number
-  aReceberProximos30Dias: number
-  aPagarProximos30Dias: number
 }
 
 interface Props {
@@ -70,36 +68,6 @@ function saldoCor(saldo: number): string {
   if (saldo > 0) return '#1D9E75'
   if (saldo < 0) return '#E24B4A'
   return 'var(--ink3)'
-}
-
-// ── Sub-stat ─────────────────────────────────────────────────────────────────
-
-function SubStat({
-  label,
-  value,
-  variant,
-}: {
-  label: string
-  value: number
-  variant: 'positive' | 'negative'
-}) {
-  const cor = variant === 'positive' ? '#1D9E75' : '#E24B4A'
-  return (
-    <div
-      className="rounded-md p-2.5"
-      style={{ background: 'var(--surf2)', border: '0.5px solid var(--line2)' }}
-    >
-      <div
-        className="text-[10px] font-semibold uppercase tracking-wider mb-1"
-        style={{ color: 'var(--ink3)' }}
-      >
-        {label}
-      </div>
-      <div className="text-[13px] font-semibold" style={{ color: cor }}>
-        {fR(value)}
-      </div>
-    </div>
-  )
 }
 
 // ── Skeleton ─────────────────────────────────────────────────────────────────
@@ -227,39 +195,9 @@ export function SaldosBancarios({ data, loading }: Props) {
           )}
         </div>
 
-        {/* Seção: Posição do Caixa */}
-        <div
-          className="text-[10px] font-semibold uppercase tracking-wider mt-4 pb-2"
-          style={{
-            color: 'var(--ink3)',
-            letterSpacing: '0.04em',
-            borderBottom: '0.5px solid var(--line)',
-          }}
-        >
-          Posição do caixa
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 mt-3">
-          {loading || !data ? (
-            <>
-              <Skeleton h={56} />
-              <Skeleton h={56} />
-            </>
-          ) : (
-            <>
-              <SubStat
-                label="A receber em 30d"
-                value={data.aReceberProximos30Dias}
-                variant="positive"
-              />
-              <SubStat
-                label="A pagar em 30d"
-                value={data.aPagarProximos30Dias}
-                variant="negative"
-              />
-            </>
-          )}
-        </div>
+        {/* "A receber 30d" e "A pagar 30d" foram movidos para o widget
+            "Ponto de Equilíbrio" (próximos 3 meses, regime caixa, com
+            decomposição). Mantemos apenas o saldo consolidado aqui. */}
       </CardContent>
     </Card>
   )

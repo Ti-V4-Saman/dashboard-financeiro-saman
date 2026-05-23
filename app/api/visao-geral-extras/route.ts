@@ -113,21 +113,9 @@ export async function GET(request: Request) {
         ORDER BY saldo_atual DESC NULLS LAST, nome
       `)
 
-      // ── 2. Projeção 30 dias ───────────────────────────────────────────────
-      const [aReceberRes, aPagarRes] = await Promise.all([
-        client.query<{ total: string }>(`
-          SELECT COALESCE(SUM(valor_aberto), 0) AS total
-          FROM ca.contas_receber
-          WHERE data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
-            AND status IN ('Aberto', 'Atrasado')
-        `),
-        client.query<{ total: string }>(`
-          SELECT COALESCE(SUM(valor_aberto), 0) AS total
-          FROM ca.contas_pagar
-          WHERE data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
-            AND status IN ('Aberto', 'Atrasado', 'Parcial')
-        `),
-      ])
+      // Projeção 30 dias (a_receber/a_pagar) foi movida para o widget Ponto de
+      // Equilíbrio, que mostra o mês corrente + 2 futuros em vez de janela
+      // rolante. Endpoint dedicado: /api/ponto-equilibrio.
 
       // ── 3. Variação vs período anterior (só se período foi fornecido) ─────
       let ticketVariacao: ReturnType<typeof variacao> = null
@@ -462,9 +450,7 @@ export async function GET(request: Request) {
       return NextResponse.json({
         saldos: {
           contas,
-          consolidado:              contas.reduce((s, c) => s + c.saldo, 0),
-          aReceberProximos30Dias:   Number(aReceberRes.rows[0].total) || 0,
-          aPagarProximos30Dias:     Number(aPagarRes.rows[0].total)   || 0,
+          consolidado: contas.reduce((s, c) => s + c.saldo, 0),
         },
         insights: {
           ticketVariacao,
