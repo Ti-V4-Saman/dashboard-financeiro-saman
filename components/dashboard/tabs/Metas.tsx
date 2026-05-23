@@ -47,12 +47,20 @@ function fPctOfFat(val: number, fat: number): string {
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
-function getRealizadoRaw(m: Meta, allData: Lancamento[]): number {
+/** Filtro de "realizado" sensível ao regime contábil.
+ *  Caixa  → só Quitado (pagamentos efetivos / baixas)
+ *  Competência → todos os status válidos exceto Cancelado/Renegociado */
+function isRealizado(situacao: string, isCaixa: boolean): boolean {
+  if (isCaixa) return situacao === 'Quitado'
+  return situacao !== 'Cancelado' && situacao !== 'Renegociado'
+}
+
+function getRealizadoRaw(m: Meta, allData: Lancamento[], isCaixa: boolean): number {
   const [y, mo] = m.mes_referencia.split('-').map(Number)
   return allData
     .filter(r => {
       if (!r.data || r.isTransfer) return false
-      if (r.situacao !== 'Quitado') return false
+      if (!isRealizado(r.situacao, isCaixa)) return false
       if (r.tipo !== m.tipo_lancamento) return false
       if (r.data.getFullYear() !== y || r.data.getMonth() + 1 !== mo) return false
       if (m.tipo === 'centro_de_custo') {
@@ -199,13 +207,15 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
 
   // ─── Data Processing ────────────────────────────────────────────────────────
 
+  const isCaixa = (filters.regime ?? 'competencia') === 'caixa'
+
   const faturamento = useMemo(() => {
     const from = new Date(filters.dateFrom)
     const to   = new Date(filters.dateTo + 'T23:59:59')
     return allData
-      .filter(r => r.data && r.tipo === 'Receita' && r.situacao === 'Quitado' && !r.isTransfer && r.data >= from && r.data <= to)
+      .filter(r => r.data && r.tipo === 'Receita' && isRealizado(r.situacao, isCaixa) && !r.isTransfer && r.data >= from && r.data <= to)
       .reduce((s, r) => s + r.valor, 0)
-  }, [allData, filters])
+  }, [allData, filters, isCaixa])
 
   const metasNoPeriodo = useMemo(
     () => metas.filter(m => m.mes_referencia >= fromMonth && m.mes_referencia <= toMonth),
@@ -216,7 +226,7 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     () =>
       metasNoPeriodo.map(m => {
         const sign    = m.tipo_lancamento === 'Receita' ? 1 : -1
-        const realRaw = getRealizadoRaw(m, allData)
+        const realRaw = getRealizadoRaw(m, allData, isCaixa)
         return {
           ...m,
           planSigned: sign * m.valor_planejado,
@@ -226,7 +236,7 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
           pctExec:    m.valor_planejado > 0 ? realRaw / m.valor_planejado : 0,
         }
       }),
-    [metasNoPeriodo, allData],
+    [metasNoPeriodo, allData, isCaixa],
   )
 
   // Valores realizados por cat1 (todos os lançamentos quitados do período)
@@ -235,14 +245,14 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
     const to   = new Date(filters.dateTo + 'T23:59:59')
     const map  = new Map<string, number>()
     for (const r of allData) {
-      if (!r.data || r.isTransfer || r.situacao !== 'Quitado') continue
+      if (!r.data || r.isTransfer || !isRealizado(r.situacao, isCaixa)) continue
       if (r.data < from || r.data > to) continue
       if (!r.cat1) continue
       const sign = r.tipo === 'Receita' ? 1 : -1
       map.set(r.cat1, (map.get(r.cat1) ?? 0) + sign * r.valor)
     }
     return map
-  }, [allData, filters])
+  }, [allData, filters, isCaixa])
 
   // Valores planejados por cat3 (metas enriquecidas)
   const planByL3 = useMemo(() => {

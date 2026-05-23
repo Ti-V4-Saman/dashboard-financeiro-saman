@@ -93,7 +93,7 @@ export function DashboardLayout({
             }}
           >
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
-            {activeTab === 'dre'         && <DRE data={filteredData} />}
+            {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}

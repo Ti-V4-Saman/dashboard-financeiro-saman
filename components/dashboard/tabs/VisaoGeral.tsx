@@ -77,8 +77,18 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data, filters }: Props) {
-  // ── Dados já realizados (base para todos os gráficos existentes) ─────────
-  const op = useMemo(() => data.filter(r => !r.isTransfer && r.situacao === 'Quitado'), [data])
+  // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
+  // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
+  // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
+  //               porque a receita é reconhecida na competência, não no pagamento
+  const op = useMemo(() => {
+    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
+    return data.filter(r => {
+      if (r.isTransfer) return false
+      if (isCaixa) return r.situacao === 'Quitado'
+      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
+    })
+  }, [data, filters?.regime])
 
   const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
     let rec = 0, desp = 0, atr = 0

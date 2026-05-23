@@ -11,100 +11,174 @@ const pool = new Pool({
 
 const TRANSFER_ORIGENS = new Set(['TRANSFERENCIA', 'SALDO_CONTA_BANCARIA'])
 
+/**
+ * GET /api/financeiro?de=YYYY-MM-DD&ate=YYYY-MM-DD&regime=competencia|caixa
+ *
+ * REGIME = caixa
+ *   Fonte primária: ca.baixas (cada baixa vira UMA linha) — captura corretamente:
+ *     - pagamentos parciais em datas distintas
+ *     - decomposição bruto / taxa / desconto / juros / multa
+ *   Complementado por linhas "em aberto" (status IN Aberto/Atrasado/Parcial,
+ *   valor_aberto > 0) vindas direto de contas_receber/pagar com data_vencimento.
+ *
+ * REGIME = competencia
+ *   Fonte: ca.contas_receber + ca.contas_pagar (UNION) com data =
+ *   COALESCE(data_competencia, data_vencimento). Status válidos: NOT IN
+ *   ('Cancelado', 'Renegociado') — inclui Aberto/Atrasado/Parcial além de Quitado.
+ *
+ * Em ambos os regimes, o JOIN traz nome de categoria, CC, fornecedor e conta.
+ * Origem TRANSFERENCIA / SALDO_CONTA_BANCARIA é marcada com isTransfer=true e
+ * pode ser filtrada no frontend.
+ */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
-    const de     = searchParams.get('de')     || null   // YYYY-MM-DD | null
-    const ate    = searchParams.get('ate')    || null   // YYYY-MM-DD | null
+    const de     = searchParams.get('de')     || null
+    const ate    = searchParams.get('ate')    || null
     const regime = searchParams.get('regime') || 'competencia'
 
-    // ── Build date filter depending on regime ─────────────────────────────────
-    // $1 = de (date or null), $2 = ate (date or null)
     const qParams: (string | null)[] = [de, ate]
 
-    let recedberDateExpr: string
-    let pagarDateExpr: string
-    let recedberWhere: string
-    let pagarWhere: string
+    let query: string
 
     if (regime === 'caixa') {
-      recedberDateExpr = 'data_recebimento'
-      pagarDateExpr    = 'data_pagamento'
-      recedberWhere = `
-        status = 'Quitado'
-        AND status NOT IN ('Cancelado', 'Renegociado')
-        AND ($1::date IS NULL OR data_recebimento >= $1)
-        AND ($2::date IS NULL OR data_recebimento <= $2)
-      `
-      pagarWhere = `
-        status = 'Quitado'
-        AND status NOT IN ('Cancelado', 'Renegociado')
-        AND ($1::date IS NULL OR data_pagamento >= $1)
-        AND ($2::date IS NULL OR data_pagamento <= $2)
-      `
-    } else {
-      // competencia: usa COALESCE(data_competencia, data_vencimento)
-      recedberDateExpr = 'COALESCE(data_competencia, data_vencimento)'
-      pagarDateExpr    = 'COALESCE(data_competencia, data_vencimento)'
-      recedberWhere = `
-        status NOT IN ('Cancelado', 'Renegociado')
-        AND ($1::date IS NULL OR COALESCE(data_competencia, data_vencimento) >= $1)
-        AND ($2::date IS NULL OR COALESCE(data_competencia, data_vencimento) <= $2)
-      `
-      pagarWhere = recedberWhere
-    }
-
-    const query = `
-      SELECT
-          t.tipo,
-          t.descricao                   AS desc,
-          COALESCE(p.nome,  '')         AS fornecedor,
-          COALESCE(cf.nome, '')         AS conta,
-          COALESCE(t.total, 0)          AS valor,
-          COALESCE(t.valor_pago, t.total, 0) AS valordre,
-          t.status                      AS situacao,
-          t.data                        AS data,
-          COALESCE(t.origem, '')        AS origem,
-          COALESCE(cat.nome, '')        AS cat1,
-          COALESCE(cc.nome,  '')        AS cc1
-      FROM (
+      // ── CAIXA: baixas (realizadas) + em-aberto via vencimento ───────────────
+      query = `
+        WITH realizadas AS (
           SELECT
-              'Receita'               AS tipo,
-              descricao,
-              total,
-              valor_pago,
-              ${recedberDateExpr}     AS data,
-              status,
-              origem,
-              categoria_id,
-              conta_financeira_id     AS conta_id,
-              pessoa_id,
-              centro_custo_id
-          FROM ca.contas_receber
-          WHERE ${recedberWhere}
+            CASE b.tipo WHEN 'RECEITA' THEN 'Receita' ELSE 'Despesa' END AS tipo,
+            COALESCE(cr.descricao, cp.descricao, '')                AS descricao,
+            b.data_pagamento                                         AS data,
+            b.valor_bruto                                            AS valor,
+            b.valor                                                  AS valor_dre,
+            'Quitado'                                                AS status,
+            COALESCE(cr.origem, cp.origem, '')                       AS origem,
+            COALESCE(cr.categoria_id, cp.categoria_id)               AS categoria_id,
+            COALESCE(cr.centro_custo_id, cp.centro_custo_id)         AS centro_custo_id,
+            COALESCE(cr.pessoa_id, cp.pessoa_id)                     AS pessoa_id,
+            b.conta_financeira_id                                    AS conta_id,
+            b.forma_pagamento                                        AS forma
+          FROM ca.baixas b
+          LEFT JOIN ca.contas_receber cr ON cr.id = b.evento_id AND b.tipo = 'RECEITA'
+          LEFT JOIN ca.contas_pagar   cp ON cp.id = b.evento_id AND b.tipo = 'DESPESA'
+          WHERE COALESCE(cr.status, cp.status) NOT IN ('Cancelado', 'Renegociado')
+            AND ($1::date IS NULL OR b.data_pagamento >= $1)
+            AND ($2::date IS NULL OR b.data_pagamento <= $2)
+        ),
+        em_aberto AS (
+          SELECT
+            'Receita'              AS tipo,
+            cr.descricao           AS descricao,
+            cr.data_vencimento     AS data,
+            cr.valor_aberto        AS valor,
+            cr.valor_aberto        AS valor_dre,
+            cr.status              AS status,
+            COALESCE(cr.origem,'') AS origem,
+            cr.categoria_id,
+            cr.centro_custo_id,
+            cr.pessoa_id,
+            cr.conta_financeira_id AS conta_id,
+            ''                     AS forma
+          FROM ca.contas_receber cr
+          WHERE cr.status IN ('Aberto', 'Atrasado', 'Parcial')
+            AND cr.valor_aberto > 0
+            AND ($1::date IS NULL OR cr.data_vencimento >= $1)
+            AND ($2::date IS NULL OR cr.data_vencimento <= $2)
 
           UNION ALL
 
           SELECT
-              'Despesa'               AS tipo,
-              descricao,
-              total,
-              valor_pago,
-              ${pagarDateExpr}        AS data,
-              status,
-              origem,
-              categoria_id,
-              conta_financeira_id     AS conta_id,
-              pessoa_id,
-              centro_custo_id
+            'Despesa', cp.descricao, cp.data_vencimento,
+            cp.valor_aberto, cp.valor_aberto, cp.status,
+            COALESCE(cp.origem,''), cp.categoria_id, cp.centro_custo_id,
+            cp.pessoa_id, cp.conta_financeira_id, ''
+          FROM ca.contas_pagar cp
+          WHERE cp.status IN ('Aberto', 'Atrasado', 'Parcial')
+            AND cp.valor_aberto > 0
+            AND ($1::date IS NULL OR cp.data_vencimento >= $1)
+            AND ($2::date IS NULL OR cp.data_vencimento <= $2)
+        ),
+        unioned AS (
+          SELECT * FROM realizadas
+          UNION ALL
+          SELECT * FROM em_aberto
+        )
+        SELECT
+          t.tipo,
+          t.descricao                AS desc,
+          COALESCE(p.nome,  '')      AS fornecedor,
+          COALESCE(cf.nome, '')      AS conta,
+          COALESCE(t.valor, 0)       AS valor,
+          COALESCE(t.valor_dre, t.valor, 0) AS valordre,
+          t.status                   AS situacao,
+          t.data                     AS data,
+          COALESCE(t.origem, '')     AS origem,
+          COALESCE(t.forma, '')      AS forma,
+          COALESCE(cat.nome, '')     AS cat1,
+          COALESCE(cc.nome,  '')     AS cc1
+        FROM unioned t
+        LEFT JOIN ca.categorias        cat ON cat.id = t.categoria_id
+        LEFT JOIN ca.centros_custo     cc  ON cc.id  = t.centro_custo_id
+        LEFT JOIN ca.pessoas           p   ON p.id   = t.pessoa_id
+        LEFT JOIN ca.contas_financeiras cf ON cf.id  = t.conta_id
+      `
+    } else {
+      // ── COMPETÊNCIA: contas_receber + contas_pagar com data_competencia ─────
+      // status NOT IN (Cancelado, Renegociado) — inclui Aberto/Atrasado/Parcial.
+      // O frontend trata "realizada vs prevista" pela coluna situacao.
+      query = `
+        WITH unioned AS (
+          SELECT
+            'Receita' AS tipo,
+            descricao,
+            COALESCE(data_competencia, data_vencimento) AS data,
+            total          AS valor,
+            COALESCE(valor_pago, total, 0) AS valor_dre,
+            status,
+            COALESCE(origem, '') AS origem,
+            categoria_id,
+            centro_custo_id,
+            pessoa_id,
+            conta_financeira_id AS conta_id,
+            '' AS forma
+          FROM ca.contas_receber
+          WHERE status NOT IN ('Cancelado', 'Renegociado')
+            AND ($1::date IS NULL OR COALESCE(data_competencia, data_vencimento) >= $1)
+            AND ($2::date IS NULL OR COALESCE(data_competencia, data_vencimento) <= $2)
+
+          UNION ALL
+
+          SELECT
+            'Despesa', descricao,
+            COALESCE(data_competencia, data_vencimento),
+            total, COALESCE(valor_pago, total, 0), status,
+            COALESCE(origem, ''), categoria_id, centro_custo_id, pessoa_id,
+            conta_financeira_id, ''
           FROM ca.contas_pagar
-          WHERE ${pagarWhere}
-      ) t
-      LEFT JOIN ca.categorias        cat ON cat.id = t.categoria_id
-      LEFT JOIN ca.centros_custo     cc  ON cc.id  = t.centro_custo_id
-      LEFT JOIN ca.pessoas           p   ON p.id   = t.pessoa_id
-      LEFT JOIN ca.contas_financeiras cf ON cf.id  = t.conta_id
-    `
+          WHERE status NOT IN ('Cancelado', 'Renegociado')
+            AND ($1::date IS NULL OR COALESCE(data_competencia, data_vencimento) >= $1)
+            AND ($2::date IS NULL OR COALESCE(data_competencia, data_vencimento) <= $2)
+        )
+        SELECT
+          t.tipo,
+          t.descricao                AS desc,
+          COALESCE(p.nome,  '')      AS fornecedor,
+          COALESCE(cf.nome, '')      AS conta,
+          COALESCE(t.valor, 0)       AS valor,
+          COALESCE(t.valor_dre, t.valor, 0) AS valordre,
+          t.status                   AS situacao,
+          t.data                     AS data,
+          COALESCE(t.origem, '')     AS origem,
+          COALESCE(t.forma, '')      AS forma,
+          COALESCE(cat.nome, '')     AS cat1,
+          COALESCE(cc.nome,  '')     AS cc1
+        FROM unioned t
+        LEFT JOIN ca.categorias        cat ON cat.id = t.categoria_id
+        LEFT JOIN ca.centros_custo     cc  ON cc.id  = t.centro_custo_id
+        LEFT JOIN ca.pessoas           p   ON p.id   = t.pessoa_id
+        LEFT JOIN ca.contas_financeiras cf ON cf.id  = t.conta_id
+      `
+    }
 
     const { rows: lancamentos } = await pool.query(query, qParams)
 
@@ -131,7 +205,7 @@ export async function GET(request: Request) {
         tipo:       row.tipo as 'Receita' | 'Despesa',
         origem:     row.origem || '',
         conta:      row.conta,
-        forma:      '',
+        forma:      row.forma || '',
         valor:      v,
         valorDRE:   vDRE,
         situacao:   row.situacao,
