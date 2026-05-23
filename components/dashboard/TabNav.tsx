@@ -1,6 +1,6 @@
 'use client'
 
-type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'acesso'
+type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'notas' | 'acesso'
 
 interface TabNavProps {
   active: Tab
@@ -16,6 +16,7 @@ const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
   { id: 'qualidade',   label: 'Qualidade & Insights' },
   { id: 'lancamentos', label: 'Lançamentos' },
   { id: 'metas',       label: 'Metas' },
+  { id: 'notas',       label: 'Notas Fiscais' },
   { id: 'acesso',      label: '🔐 Acesso', adminOnly: true },
 ]
 
