@@ -27,20 +27,56 @@ logger = logging.getLogger(__name__)
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_sync_params(mode: str = "incremental", style: str = "finance") -> Dict[str, str]:
+    """
+    Constrói filtros de data para chamadas à API do Conta Azul.
+
+    ESTRATÉGIA (refatorada em 22/mai/2026 — fix definitivo Bug #1):
+
+      • Filtros de DATA DE VENCIMENTO (contas-a-receber/pagar) ou DATA DA
+        VENDA (vendas) são OBRIGATÓRIOS pela API. Passamos range AMPLO
+        (2000-01-01 a 2099-12-31) para não excluir nada por essas chaves.
+
+      • Em modo INCREMENTAL: adicionamos data_alteracao_de/ate
+        (últimos 30 dias em ISO 8601 GMT-3) — esse é o filtro que de fato
+        define o que entra no sync. Captura QUALQUER mudança recente:
+        - vendas novas
+        - alterações de vencimento, valor, categoria
+        - baixas (pagamentos), incluindo retroativos e antecipados
+        - cancelamentos, renegociações
+
+      • Em modo FULL: sem filtro de data_alteracao — varre tudo.
+
+    Documentado em docs/conta-azul-api-guia.md §1.2:
+      "data_vencimento_de/ate são obrigatórios. Use range amplo (2000-01-01
+       a 2099-12-31) quando o foco for outra data."
+    """
     today = date.today()
-    year_end = date(today.year, 12, 31)
 
-    if mode == "full":
-        start_date = "2015-01-01"
-    else:
-        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+    # Range amplo para os filtros obrigatórios (vencimento ou data da venda)
+    wide_start = "2000-01-01"
+    wide_end   = "2099-12-31"
 
-    end_date = year_end.strftime("%Y-%m-%d")
+    params: Dict[str, str] = {}
 
     if style == "sales":
-        return {"data_inicio": start_date, "data_fim": end_date}
+        params["data_inicio"] = wide_start
+        params["data_fim"]    = wide_end
     else:
-        return {"data_vencimento_de": start_date, "data_vencimento_ate": end_date}
+        params["data_vencimento_de"]  = wide_start
+        params["data_vencimento_ate"] = wide_end
+
+    # Em incremental, adiciona janela de 30 dias por data_alteracao —
+    # capturar TUDO que mudou (criado, editado, pago, cancelado, etc).
+    if mode != "full":
+        # ISO 8601 com fuso GMT-3 (horário oficial CA)
+        now_utc  = datetime.now(timezone.utc)
+        gmt3     = timezone(timedelta(hours=-3))
+        alt_ate  = now_utc.astimezone(gmt3)
+        alt_de   = alt_ate - timedelta(days=30)
+        params["data_alteracao_de"]  = alt_de.strftime("%Y-%m-%dT%H:%M:%S%z")
+        params["data_alteracao_ate"] = alt_ate.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    return params
 
 
 def _get_date_chunks(start_date_str: str, end_date_str: str, max_days: int = 360):
@@ -502,17 +538,27 @@ def sync_parcelas(
         return n
 
     try:
-        params   = _get_sync_params(mode, style="finance")
-        date_de  = params.get("data_vencimento_de", "2015-01-01")
-        date_ate = params.get("data_vencimento_ate", date.today().strftime("%Y-%m-%d"))
+        # ESTRATÉGIA (refatorada em 22/mai/2026):
+        # • FULL: processa TODAS as CRs/CPs no banco.
+        # • INCREMENTAL: apenas CRs/CPs com data_atualizacao nos últimos
+        #   30 dias. Como _sync_financeiro usa data_alteracao_de na API,
+        #   qualquer mudança (incluindo baixas retroativas/antecipadas)
+        #   atualiza data_atualizacao da CR/CP — esse filtro captura tudo.
+        if mode == "full":
+            alt_threshold = None
+        else:
+            alt_threshold = datetime.now(timezone.utc) - timedelta(days=30)
 
         # ── Parcelas a receber ──────────────────────────────────────────────
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM ca.contas_receber WHERE data_vencimento BETWEEN %s AND %s",
-                (date_de, date_ate),
-            )
+            if alt_threshold is None:
+                cur.execute("SELECT id FROM ca.contas_receber")
+            else:
+                cur.execute(
+                    "SELECT id FROM ca.contas_receber WHERE data_atualizacao >= %s",
+                    (alt_threshold,),
+                )
             ids_receber = [row[0] for row in cur.fetchall()]
 
         logger.info("Parcelas a receber: %d eventos a processar", len(ids_receber))
@@ -552,10 +598,13 @@ def sync_parcelas(
         # ── Parcelas a pagar ────────────────────────────────────────────────
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM ca.contas_pagar WHERE data_vencimento BETWEEN %s AND %s",
-                (date_de, date_ate),
-            )
+            if alt_threshold is None:
+                cur.execute("SELECT id FROM ca.contas_pagar")
+            else:
+                cur.execute(
+                    "SELECT id FROM ca.contas_pagar WHERE data_atualizacao >= %s",
+                    (alt_threshold,),
+                )
             ids_pagar = [row[0] for row in cur.fetchall()]
 
         logger.info("Parcelas a pagar: %d eventos a processar", len(ids_pagar))
@@ -679,6 +728,14 @@ def sync_baixas(
         GET /financeiro/eventos-financeiros/parcelas/{parcela_id}/baixa
 
     Roda APOS sync_parcelas. Faz commit a cada BATCH_SIZE registros.
+
+    ESTRATÉGIA DE FILTRO (refatorada em 22/mai/2026 — fix definitivo):
+      • FULL: processa TODAS as parcelas no banco — varredura completa.
+      • INCREMENTAL: processa APENAS parcelas com data_alteracao nos
+        últimos 30 dias. Como sync_contas_receber/pagar usa data_alteracao_de
+        na API, qualquer mudança (nova venda, baixa, cancelamento, etc)
+        atualiza o data_alteracao da parcela — então esse filtro captura
+        tanto baixas retroativas quanto antecipadas, automaticamente.
     """
     BATCH_SIZE = 200
     ENDPOINT   = "/financeiro/eventos-financeiros/parcelas/{id}/baixa"
@@ -686,28 +743,33 @@ def sync_baixas(
     records    = 0
 
     try:
-        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
+            alt_threshold = None
         else:
-            start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+            alt_threshold = datetime.now(timezone.utc) - timedelta(days=30)
 
-        end_date = date(today.year, 12, 31).strftime("%Y-%m-%d")
-
-        # Coleta IDs de parcelas a receber e a pagar no periodo
+        # Coleta IDs de parcelas a receber e a pagar
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM ca.parcelas_receber WHERE data_vencimento BETWEEN %s AND %s",
-                (start_date, end_date),
-            )
-            ids_receber = [row[0] for row in cur.fetchall()]
+            if alt_threshold is None:
+                cur.execute("SELECT id FROM ca.parcelas_receber")
+                ids_receber = [row[0] for row in cur.fetchall()]
 
-            cur.execute(
-                "SELECT id FROM ca.parcelas_pagar WHERE data_vencimento BETWEEN %s AND %s",
-                (start_date, end_date),
-            )
-            ids_pagar = [row[0] for row in cur.fetchall()]
+                cur.execute("SELECT id FROM ca.parcelas_pagar")
+                ids_pagar = [row[0] for row in cur.fetchall()]
+            else:
+                # Apenas parcelas com alteração recente
+                cur.execute(
+                    "SELECT id FROM ca.parcelas_receber WHERE data_alteracao >= %s",
+                    (alt_threshold,),
+                )
+                ids_receber = [row[0] for row in cur.fetchall()]
+
+                cur.execute(
+                    "SELECT id FROM ca.parcelas_pagar WHERE data_alteracao >= %s",
+                    (alt_threshold,),
+                )
+                ids_pagar = [row[0] for row in cur.fetchall()]
 
         all_ids = ids_receber + ids_pagar
         logger.info("sync_baixas: %d parcelas a processar (%d receber + %d pagar)",
