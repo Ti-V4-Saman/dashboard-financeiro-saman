@@ -178,6 +178,10 @@ def _map_conta_receber(raw: Dict[str, Any]) -> Dict[str, Any]:
         "observacao":          _str(raw.get("observacao") or ""),
         "id_venda":            _str(raw.get("id_venda")) or None,
         "data_recebimento":    _str(raw.get("data_recebimento") or raw.get("data_pagamento") or "") or None,
+        # API CA retorna `data_alteracao` (doc §1.4). Populamos a coluna
+        # `data_atualizacao` do nosso schema para o filtro incremental.
+        "data_atualizacao":    _str(raw.get("data_alteracao") or raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        "data_criacao":        _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
         "rateio":              rateio,
         "synced_at":           datetime.now(timezone.utc),
     }
@@ -216,6 +220,9 @@ def _map_conta_pagar(raw: Dict[str, Any]) -> Dict[str, Any]:
         "numero_documento":    _str(raw.get("numero_documento") or ""),
         "observacao":          _str(raw.get("observacao") or ""),
         "data_pagamento":      _str(raw.get("data_pagamento") or "") or None,
+        # API CA retorna `data_alteracao` (doc §1.4). Populamos `data_atualizacao`.
+        "data_atualizacao":    _str(raw.get("data_alteracao") or raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        "data_criacao":        _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
         "rateio":              rateio,
         "synced_at":           datetime.now(timezone.utc),
     }
@@ -254,7 +261,8 @@ def _map_venda(raw: Dict[str, Any]) -> Dict[str, Any]:
         "natureza_operacao":  json.dumps(nat_op) if nat_op else None,
         "composicao_valor":   json.dumps(comp_val) if comp_val else None,
         "data_criacao":       _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
-        "data_atualizacao":   _str(raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        # API CA retorna `data_alteracao` (doc §1.6). Populamos `data_atualizacao`.
+        "data_atualizacao":   _str(raw.get("data_alteracao") or raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
         "synced_at":          datetime.now(timezone.utc),
     }
 
@@ -274,7 +282,8 @@ def _map_parcela(raw: Dict[str, Any], tipo: str, evento_id: str) -> Dict[str, An
         "data_pagamento":   _str(raw.get("data_pagamento") or raw.get("payment_date") or "") or None,
         "conta_financeira_id": _id(raw.get("conta_financeira") or raw.get("financial_account")),
         "observacao":       _str(raw.get("observacao") or raw.get("notes") or "") or None,
-        "data_alteracao":   _str(raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        # API CA retorna `data_alteracao` (priorizamos esse campo)
+        "data_alteracao":   _str(raw.get("data_alteracao") or raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
         "synced_at":        datetime.now(timezone.utc),
     }
     if tipo == "pagar":
@@ -556,8 +565,12 @@ def sync_parcelas(
             if alt_threshold is None:
                 cur.execute("SELECT id FROM ca.contas_receber")
             else:
+                # OR data_atualizacao IS NULL — captura CRs que ainda não tiveram
+                # o campo populado (transição). Pode ser removido depois que
+                # todas as CRs forem re-sincronizadas pelo menos 1 vez.
                 cur.execute(
-                    "SELECT id FROM ca.contas_receber WHERE data_atualizacao >= %s",
+                    """SELECT id FROM ca.contas_receber
+                       WHERE data_atualizacao >= %s OR data_atualizacao IS NULL""",
                     (alt_threshold,),
                 )
             ids_receber = [row[0] for row in cur.fetchall()]
@@ -603,7 +616,8 @@ def sync_parcelas(
                 cur.execute("SELECT id FROM ca.contas_pagar")
             else:
                 cur.execute(
-                    "SELECT id FROM ca.contas_pagar WHERE data_atualizacao >= %s",
+                    """SELECT id FROM ca.contas_pagar
+                       WHERE data_atualizacao >= %s OR data_atualizacao IS NULL""",
                     (alt_threshold,),
                 )
             ids_pagar = [row[0] for row in cur.fetchall()]
@@ -759,15 +773,18 @@ def sync_baixas(
                 cur.execute("SELECT id FROM ca.parcelas_pagar")
                 ids_pagar = [row[0] for row in cur.fetchall()]
             else:
-                # Apenas parcelas com alteração recente
+                # Apenas parcelas com alteração recente OU sem data_alteracao
+                # populada (transição — pode ser removido após 1ª re-sync)
                 cur.execute(
-                    "SELECT id FROM ca.parcelas_receber WHERE data_alteracao >= %s",
+                    """SELECT id FROM ca.parcelas_receber
+                       WHERE data_alteracao >= %s OR data_alteracao IS NULL""",
                     (alt_threshold,),
                 )
                 ids_receber = [row[0] for row in cur.fetchall()]
 
                 cur.execute(
-                    "SELECT id FROM ca.parcelas_pagar WHERE data_alteracao >= %s",
+                    """SELECT id FROM ca.parcelas_pagar
+                       WHERE data_alteracao >= %s OR data_alteracao IS NULL""",
                     (alt_threshold,),
                 )
                 ids_pagar = [row[0] for row in cur.fetchall()]
