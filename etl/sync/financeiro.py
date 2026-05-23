@@ -176,7 +176,11 @@ def _map_conta_receber(raw: Dict[str, Any]) -> Dict[str, Any]:
         "conta_financeira_id": _id(raw.get("conta_financeira")),
         "numero_documento":    _str(raw.get("numero_documento") or ""),
         "observacao":          _str(raw.get("observacao") or ""),
-        "id_venda":            _str(raw.get("id_venda")) or None,
+        # NÃO mapeamos id_venda: a API /contas-a-receber/buscar não retorna
+        # esse campo, mapper sempre voltaria None, e o upsert sobrescreveria
+        # o valor já preenchido pelo pós-processamento (pos_processamento.py
+        # UPDATE 3 — cruza cr.descricao com ca.vendas.numero). Deixamos a
+        # coluna fora do dict para o upsert preservar o valor existente.
         "data_recebimento":    _str(raw.get("data_recebimento") or raw.get("data_pagamento") or "") or None,
         # API CA retorna `data_alteracao` (doc §1.4). Populamos a coluna
         # `data_atualizacao` do nosso schema para o filtro incremental.

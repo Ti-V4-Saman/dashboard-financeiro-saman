@@ -22,21 +22,22 @@ const pool = new Pool({
 })
 
 export interface NotaRow {
-  id: string                                          // id NF, ou venda_id quando pendente
-  kind: 'emitida' | 'cancelada' | 'falha' | 'pendente'
-  numero: number | null                               // número da NF (null para pendente)
+  id: string                                          // id NF, ou venda_id quando sem NF
+  kind: 'emitida' | 'cancelada' | 'falha' | 'paga_sem_nf' | 'a_receber'
+  numero: number | null                               // número da NF (null para sem NF)
   lancamento: string                                  // descricao da CR
   cliente: string
   valor: number
-  data_emissao: string | null                         // YYYY-MM-DD (null para pendente)
-  data_referencia: string | null                      // data da venda/baixa/competência
-  status_raw: string                                  // EMITIDA, CANCELADA, CANCELAMENTO_MANUAL, FALHA, PENDENTE
+  data_emissao: string | null                         // YYYY-MM-DD (null para sem NF)
+  data_referencia: string | null                      // data da venda/baixa/competência/vencimento
+  status_raw: string                                  // EMITIDA, CANCELADA, CANCELAMENTO_MANUAL, FALHA, PAGA_SEM_NF, A_RECEBER
   tempo_emissao_dias: number | null                   // dias entre data_referencia e data_emissao
 }
 
 interface Summary {
   emitidas:           { qtd: number; valor: number }
-  pendentes:          { qtd: number; valor: number }
+  pagas_sem_nf:       { qtd: number; valor: number }   // baixa no período sem NF emitida
+  a_receber:          { qtd: number; valor: number }   // venc no período, em aberto/atrasado/parcial, sem NF emitida
   cobertura_pct:      number
   vendas_unicas:      number
   canceladas_falha:   { qtd: number; canceladas: number; falhas: number; valor: number }
@@ -131,7 +132,36 @@ export async function GET(request: Request) {
         WHERE nf.data_emissao BETWEEN $1 AND $2
       `
 
-      const [vendasRes, nfsRes] = await Promise.all([
+      // ── 2b. A RECEBER no período (vendas em aberto/atrasado/parcial) ───────
+      // Critério: id_venda IS NOT NULL (são vendas reais, podem gerar NF) +
+      // data_vencimento no período + status pendente.
+      // Vai gerar UMA linha por venda única.
+      const aReceberSql = `
+        WITH base AS (
+          SELECT
+            cr.id_venda,
+            MIN(cr.descricao)                AS descricao_ref,
+            MIN(cr.pessoa_id::text)          AS pessoa_id_txt,
+            MIN(cr.data_vencimento)          AS data_ref,
+            SUM(cr.valor_aberto)             AS valor
+          FROM ca.contas_receber cr
+          WHERE cr.id_venda IS NOT NULL
+            AND cr.status IN ('Aberto', 'Atrasado', 'Parcial')
+            AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+            AND cr.data_vencimento BETWEEN $1 AND $2
+          GROUP BY cr.id_venda
+        )
+        SELECT
+          base.id_venda::text                AS id_venda,
+          base.descricao_ref                 AS descricao,
+          COALESCE(p.nome, '')               AS cliente,
+          base.data_ref::text                AS data_ref,
+          base.valor::float                  AS valor
+        FROM base
+        LEFT JOIN ca.pessoas p ON p.id::text = base.pessoa_id_txt
+      `
+
+      const [vendasRes, nfsRes, aReceberRes] = await Promise.all([
         client.query<{
           id_venda: string; descricao: string; cliente: string;
           data_ref: string; valor: number
@@ -141,31 +171,26 @@ export async function GET(request: Request) {
           venda_id: string | null; data_emissao: string;
           valor: number; cliente: string
         }>(nfsSql, [de, ate]),
+        client.query<{
+          id_venda: string; descricao: string; cliente: string;
+          data_ref: string; valor: number
+        }>(aReceberSql, [de, ate]),
       ])
 
-      // ── 2b. NFs vinculadas às vendas do período (qualquer data_emissao) ────
-      // Necessário para a contagem de cobertura — uma venda em abril com NF
-      // emitida em maio deve contar como "tem NF" (apenas atrasada).
-      const vendaIds = vendasRes.rows.map(v => v.id_venda)
-      let nfsVinculadasEmitidas = new Set<string>()  // id_venda
-      if (vendaIds.length > 0) {
+      // ── 2c. NFs emitidas vinculadas a qualquer venda do período ───────────
+      // (vendas pagas + a receber). Cobertura considera ambos os conjuntos.
+      const idsPagas    = vendasRes.rows.map(v => v.id_venda)
+      const idsAReceber = aReceberRes.rows.map(v => v.id_venda)
+      const todosIds    = Array.from(new Set([...idsPagas, ...idsAReceber]))
+
+      const nfsVinculadasEmitidas = new Set<string>()  // id_venda
+      if (todosIds.length > 0) {
         const allNfsRes = await client.query<{ venda_id: string }>(`
           SELECT DISTINCT venda_id::text AS venda_id
           FROM ca.notas_fiscais
           WHERE status = 'EMITIDA' AND venda_id = ANY($1::uuid[])
-        `, [vendaIds])
+        `, [todosIds])
         for (const row of allNfsRes.rows) nfsVinculadasEmitidas.add(row.venda_id)
-      }
-
-      // ── 3. Indexar NFs por venda_id (para join no Node) ────────────────────
-      // Uma venda pode ter NFs em vários status. Para classificar uma venda
-      // como "tem NF emitida", basta uma NF EMITIDA associada.
-      const nfsPorVenda = new Map<string, typeof nfsRes.rows>()
-      for (const nf of nfsRes.rows) {
-        if (!nf.venda_id) continue
-        const arr = nfsPorVenda.get(nf.venda_id) ?? []
-        arr.push(nf)
-        nfsPorVenda.set(nf.venda_id, arr)
       }
 
       // ── 4. Montar rows ─────────────────────────────────────────────────────
@@ -173,17 +198,16 @@ export async function GET(request: Request) {
 
       // 4a. NFs do período (emitidas, canceladas, falhas)
       for (const nf of nfsRes.rows) {
-        // Descobre data_referencia da venda (se vinculada)
         const venda = nf.venda_id
-          ? vendasRes.rows.find(v => v.id_venda === nf.venda_id)
+          ? (vendasRes.rows.find(v => v.id_venda === nf.venda_id)
+             ?? aReceberRes.rows.find(v => v.id_venda === nf.venda_id))
           : null
 
         let kind: NotaRow['kind']
         if (nf.status === 'EMITIDA')                                 kind = 'emitida'
         else if (nf.status === 'CANCELADA' || nf.status === 'CANCELAMENTO_MANUAL') kind = 'cancelada'
-        else                                                          kind = 'falha'  // FALHA ou desconhecido
+        else                                                          kind = 'falha'
 
-        // Tempo de emissão = dias entre data_referencia (venda) e data_emissao
         let tempo: number | null = null
         if (venda?.data_ref && nf.data_emissao && kind === 'emitida') {
           const ref = new Date(venda.data_ref).getTime()
@@ -205,34 +229,56 @@ export async function GET(request: Request) {
         })
       }
 
-      // 4b. Vendas pendentes (sem NF EMITIDA vinculada — em QUALQUER data)
+      // 4b. Vendas PAGAS no período sem NF emitida (URGENTE)
       for (const venda of vendasRes.rows) {
         if (nfsVinculadasEmitidas.has(venda.id_venda)) continue
         rows.push({
           id:                  venda.id_venda,
-          kind:                'pendente',
+          kind:                'paga_sem_nf',
           numero:              null,
           lancamento:          venda.descricao,
           cliente:             venda.cliente,
           valor:               venda.valor,
           data_emissao:        null,
           data_referencia:     venda.data_ref,
-          status_raw:          'PENDENTE',
+          status_raw:          'PAGA_SEM_NF',
+          tempo_emissao_dias:  null,
+        })
+      }
+
+      // 4c. Vendas A RECEBER no período (vencimento no mês) sem NF emitida
+      // Filtra para não duplicar — não inclui vendas que já estão em vendasRes
+      // (essas já foram tratadas em 4b como pagas)
+      const idsPagasSet = new Set(idsPagas)
+      for (const venda of aReceberRes.rows) {
+        if (idsPagasSet.has(venda.id_venda))           continue  // já é "paga sem NF" ou tem NF
+        if (nfsVinculadasEmitidas.has(venda.id_venda)) continue  // já tem NF — sai do "sem NF"
+        rows.push({
+          id:                  venda.id_venda,
+          kind:                'a_receber',
+          numero:              null,
+          lancamento:          venda.descricao,
+          cliente:             venda.cliente,
+          valor:               venda.valor,
+          data_emissao:        null,
+          data_referencia:     venda.data_ref,
+          status_raw:          'A_RECEBER',
           tempo_emissao_dias:  null,
         })
       }
 
       // ── 5. Agregar summary ─────────────────────────────────────────────────
-      const emitidas  = rows.filter(r => r.kind === 'emitida')
-      const pendentes = rows.filter(r => r.kind === 'pendente')
-      const canc      = rows.filter(r => r.kind === 'cancelada')
-      const falhas    = rows.filter(r => r.kind === 'falha')
+      const emitidas    = rows.filter(r => r.kind === 'emitida')
+      const pagasSemNf  = rows.filter(r => r.kind === 'paga_sem_nf')
+      const aReceber    = rows.filter(r => r.kind === 'a_receber')
+      const canc        = rows.filter(r => r.kind === 'cancelada')
+      const falhas      = rows.filter(r => r.kind === 'falha')
 
-      // cobertura = vendas únicas do período com NF emitida (em qualquer data) /
-      // total de vendas únicas do período.
-      const vendasUnicas = vendasRes.rows.length
-      const vendasComNFEmitida = vendasRes.rows.filter(v =>
-        nfsVinculadasEmitidas.has(v.id_venda),
+      // cobertura = vendas únicas (pagas + a receber, sem duplicar) com NF
+      // emitida / total. Inclui ambos os conjuntos pois ambos deveriam ter NF.
+      const vendasUnicas = todosIds.length
+      const vendasComNFEmitida = todosIds.filter(id =>
+        nfsVinculadasEmitidas.has(id),
       ).length
       const coberturaPct = vendasUnicas > 0
         ? Math.min(100, Math.round(vendasComNFEmitida / vendasUnicas * 100))
@@ -250,9 +296,13 @@ export async function GET(request: Request) {
           qtd:   emitidas.length,
           valor: round2(emitidas.reduce((s, r) => s + r.valor, 0)),
         },
-        pendentes: {
-          qtd:   pendentes.length,
-          valor: round2(pendentes.reduce((s, r) => s + r.valor, 0)),
+        pagas_sem_nf: {
+          qtd:   pagasSemNf.length,
+          valor: round2(pagasSemNf.reduce((s, r) => s + r.valor, 0)),
+        },
+        a_receber: {
+          qtd:   aReceber.length,
+          valor: round2(aReceber.reduce((s, r) => s + r.valor, 0)),
         },
         cobertura_pct: coberturaPct,
         vendas_unicas: vendasUnicas,
