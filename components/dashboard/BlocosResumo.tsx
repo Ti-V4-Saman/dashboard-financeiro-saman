@@ -21,7 +21,7 @@ export interface ContratosData {
   ativos:            number
   receitaRecorrente: number
   ticketMedio:       number
-  aVencer30:         number
+  aVencer60:         number
   vencidosAtivos:    number
   inativos:          number
   semCC:             number
@@ -313,10 +313,10 @@ function CardContratos({ data }: { data: ContratosData | null }) {
             value={data.ticketMedio > 0 ? fR(data.ticketMedio) : '—'}
           />
           <Row
-            label="A vencer em 30 dias"
-            value={data.aVencer30.toLocaleString('pt-BR')}
-            color={data.aVencer30 > 0 ? C.amber : C.default}
-            sub={data.aVencer30 > 0 ? 'contratos' : undefined}
+            label="A vencer em 60 dias"
+            value={data.aVencer60.toLocaleString('pt-BR')}
+            color={data.aVencer60 > 0 ? C.amber : C.default}
+            sub={data.aVencer60 > 0 ? 'contratos' : undefined}
           />
           <Row
             label="Vencidos (ativos)"

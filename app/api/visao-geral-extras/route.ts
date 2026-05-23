@@ -31,7 +31,7 @@ interface ContratosData {
   ativos:            number
   receitaRecorrente: number
   ticketMedio:       number
-  aVencer30:         number
+  aVencer60:         number
   vencidosAtivos:    number
   inativos:          number
   semCC:             number
@@ -317,17 +317,19 @@ export async function GET(request: Request) {
       try {
         const ctrRes = await client.query<{
           ativos: string; receita_recorrente: string
-          a_vencer_30: string; vencidos_ativos: string
+          a_vencer_60: string; vencidos_ativos: string
           inativos: string; sem_cc: string
         }>(`
           SELECT
             COUNT(*) FILTER (WHERE status = 'ATIVO')                                                          AS ativos,
             COALESCE(SUM(valor_total) FILTER (WHERE status = 'ATIVO'), 0)                                     AS receita_recorrente,
+            -- A vencer em 60 dias — alinhado com critério "próximos do término" do Conta Azul
             COUNT(*) FILTER (WHERE status = 'ATIVO'
-              AND data_fim BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days')                        AS a_vencer_30,
+              AND data_fim BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days')                        AS a_vencer_60,
             COUNT(*) FILTER (WHERE status = 'ATIVO' AND data_fim < CURRENT_DATE)                              AS vencidos_ativos,
             COUNT(*) FILTER (WHERE status = 'INATIVO')                                                        AS inativos,
-            COUNT(*) FILTER (WHERE centro_custo_id IS NULL)                                                   AS sem_cc
+            -- Sem CC só faz sentido para ATIVOS (inativos já não vão movimentar)
+            COUNT(*) FILTER (WHERE status = 'ATIVO' AND centro_custo_id IS NULL)                              AS sem_cc
           FROM ca.contratos
         `)
         const cr = ctrRes.rows[0]
@@ -337,7 +339,7 @@ export async function GET(request: Request) {
           ativos,
           receitaRecorrente: Math.round(recRec * 100) / 100,
           ticketMedio:       ativos > 0 ? Math.round(recRec / ativos * 100) / 100 : 0,
-          aVencer30:         Number(cr.a_vencer_30),
+          aVencer60:         Number(cr.a_vencer_60),
           vencidosAtivos:    Number(cr.vencidos_ativos),
           inativos:          Number(cr.inativos),
           semCC:             Number(cr.sem_cc),
@@ -349,32 +351,38 @@ export async function GET(request: Request) {
       // 4c. Notas Fiscais (respeita período)
       if (de && ate) {
         try {
-          // "Lançamentos receita" e "Pago sem nota" — fonte depende do regime
-          const lancRecQ = regime === 'caixa' ? `
-            SELECT COUNT(DISTINCT b.evento_id) AS total
+          // Cobertura de NF = vendas únicas com NF emitida / total de vendas únicas
+          // Conta apenas CRs/baixas COM id_venda (lançamentos manuais sem venda
+          // — Liquidação Cartão, PIX avulso etc — nunca geram NF e não devem
+          // entrar no denominador).
+          const vendasUnicasQ = regime === 'caixa' ? `
+            SELECT COUNT(DISTINCT cr.id_venda) AS total
             FROM ca.baixas b
             JOIN ca.contas_receber cr ON cr.id = b.evento_id
             WHERE b.tipo = 'RECEITA'
+              AND cr.id_venda IS NOT NULL
               AND cr.status NOT IN ('Cancelado','Renegociado')
               AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
               AND b.data_pagamento BETWEEN $1 AND $2
           ` : `
-            SELECT COUNT(*) AS total
+            SELECT COUNT(DISTINCT id_venda) AS total
             FROM ca.contas_receber
-            WHERE status NOT IN ('Cancelado','Renegociado')
+            WHERE id_venda IS NOT NULL
+              AND status NOT IN ('Cancelado','Renegociado')
               AND COALESCE(origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
               AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
           `
 
-          // Pago sem nota: sempre conta apenas o que foi efetivamente pago
-          // (faz sentido apenas para receitas com pagamento — Quitado / com baixa)
+          // Pago sem nota: vendas únicas (DISTINCT id_venda) com baixa no período
+          // mas sem NF emitida. Valor = soma das baixas/quitações no período.
           const semNotaQ = regime === 'caixa' ? `
             SELECT
-              COUNT(DISTINCT b.evento_id)            AS qtd,
-              COALESCE(SUM(b.valor_bruto), 0)        AS valor
+              COUNT(DISTINCT cr.id_venda)                AS qtd,
+              COALESCE(SUM(b.valor_bruto), 0)            AS valor
             FROM ca.baixas b
             JOIN ca.contas_receber cr ON cr.id = b.evento_id
             WHERE b.tipo = 'RECEITA'
+              AND cr.id_venda IS NOT NULL
               AND cr.status NOT IN ('Cancelado','Renegociado')
               AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
               AND b.data_pagamento BETWEEN $1 AND $2
@@ -384,10 +392,11 @@ export async function GET(request: Request) {
               )
           ` : `
             SELECT
-              COUNT(*)                                              AS qtd,
-              COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)   AS valor
+              COUNT(DISTINCT cr.id_venda)                          AS qtd,
+              COALESCE(SUM(COALESCE(cr.valor_pago, cr.total)), 0)  AS valor
             FROM ca.contas_receber cr
             WHERE cr.status = 'Quitado'
+              AND cr.id_venda IS NOT NULL
               AND COALESCE(cr.data_competencia, cr.data_vencimento) BETWEEN $1 AND $2
               AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
               AND NOT EXISTS (
@@ -411,20 +420,24 @@ export async function GET(request: Request) {
               WHERE data_emissao BETWEEN $1 AND $2
             `, [de, ate]),
 
-            client.query<{ total: string }>(lancRecQ, [de, ate]),
+            client.query<{ total: string }>(vendasUnicasQ, [de, ate]),
             client.query<{ qtd: string; valor: string }>(semNotaQ, [de, ate]),
           ])
 
           const nfRow = nfRes.rows[0]
-          const lancRec = Number(crRes.rows[0].total)
+          const vendasUnicas = Number(crRes.rows[0].total)
           const emitidas = Number(nfRow.emitidas)
-          const coberturaPct = lancRec > 0 ? Math.round(emitidas / lancRec * 100) : 100
+          // Cobertura = NFs emitidas / vendas únicas no período. Cap em 100% caso
+          // existam NFs emitidas referenciando vendas fora do período (raro).
+          const coberturaPct = vendasUnicas > 0
+            ? Math.min(100, Math.round(emitidas / vendasUnicas * 100))
+            : 100
 
           blocos.notas = {
             emitidas,
-            lancamentosReceita: lancRec,
+            lancamentosReceita: vendasUnicas,
             coberturaPct,
-            qtdSemNota:         lancRec - emitidas > 0 ? lancRec - emitidas : 0,
+            qtdSemNota:         vendasUnicas - emitidas > 0 ? vendasUnicas - emitidas : 0,
             valorFaturado:      Math.round(Number(nfRow.valor_faturado) * 100) / 100,
             canceladasFalha:    Number(nfRow.canceladas_falha),
             detalheCancel:      nfRow.detalhe || '',
