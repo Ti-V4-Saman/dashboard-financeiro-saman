@@ -85,15 +85,15 @@ function Skeleton({ h = 14, w = '100%' }: { h?: number; w?: string }) {
 
 export function SaldosBancarios({ data, loading }: Props) {
   return (
-    <Card className="flex flex-col">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle>Saldos bancários</CardTitle>
         <CardDescription>Por conta financeira</CardDescription>
       </CardHeader>
 
-      <CardContent className="flex flex-col flex-1 gap-0 pt-0">
+      <CardContent className="gap-0 pt-0">
         {/* Lista de contas */}
-        <div className="flex-1">
+        <div>
           {loading || !data ? (
             <div className="space-y-3 py-2">
               {[...Array(4)].map((_, i) => (

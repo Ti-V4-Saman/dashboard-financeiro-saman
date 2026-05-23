@@ -377,7 +377,7 @@ export default function PontoEquilibrioWidget() {
         </p>
       </div>
 
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
         {data.meses.map(m => m.is_atual
           ? <CardMesAtual  key={m.mes_ref} mes={m} saldoAtual={data.saldo_atual} mesFimYMD={fimMesAtualYMD} />
           : <CardMesFuturo key={m.mes_ref} mes={m} />
@@ -402,8 +402,6 @@ const cardStyle: React.CSSProperties = {
   border: '1px solid var(--line)',
   borderRadius: 10,
   padding: 16,
-  display: 'flex',
-  flexDirection: 'column',
 }
 
 const separatorStyle: React.CSSProperties = {
