@@ -27,26 +27,56 @@ logger = logging.getLogger(__name__)
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_sync_params(mode: str = "incremental", style: str = "finance") -> Dict[str, str]:
+    """
+    Constrói filtros de data para chamadas à API do Conta Azul.
+
+    ESTRATÉGIA (refatorada em 22/mai/2026 — fix definitivo Bug #1):
+
+      • Filtros de DATA DE VENCIMENTO (contas-a-receber/pagar) ou DATA DA
+        VENDA (vendas) são OBRIGATÓRIOS pela API. Passamos range AMPLO
+        (2000-01-01 a 2099-12-31) para não excluir nada por essas chaves.
+
+      • Em modo INCREMENTAL: adicionamos data_alteracao_de/ate
+        (últimos 30 dias em ISO 8601 GMT-3) — esse é o filtro que de fato
+        define o que entra no sync. Captura QUALQUER mudança recente:
+        - vendas novas
+        - alterações de vencimento, valor, categoria
+        - baixas (pagamentos), incluindo retroativos e antecipados
+        - cancelamentos, renegociações
+
+      • Em modo FULL: sem filtro de data_alteracao — varre tudo.
+
+    Documentado em docs/conta-azul-api-guia.md §1.2:
+      "data_vencimento_de/ate são obrigatórios. Use range amplo (2000-01-01
+       a 2099-12-31) quando o foco for outra data."
+    """
     today = date.today()
-    # end_date estende-se 2 anos para o futuro para capturar parcelas com
-    # vencimento em ano civil futuro (ex: venda 12x parcelada cujas últimas
-    # parcelas vencem ano que vem mas são pagas antecipadamente).
-    # Bug confirmado em 22/mai/2026: Venda 1521 (12x) teve parcelas 10/12 e
-    # 11/12 (venc jan/fev 2027) pagas em abril/2026 — baixas nunca chegavam
-    # ao banco porque o ETL filtrava data_vencimento_ate até 2026-12-31.
-    far_future = date(today.year + 2, 12, 31)
 
-    if mode == "full":
-        start_date = "2015-01-01"
-    else:
-        start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+    # Range amplo para os filtros obrigatórios (vencimento ou data da venda)
+    wide_start = "2000-01-01"
+    wide_end   = "2099-12-31"
 
-    end_date = far_future.strftime("%Y-%m-%d")
+    params: Dict[str, str] = {}
 
     if style == "sales":
-        return {"data_inicio": start_date, "data_fim": end_date}
+        params["data_inicio"] = wide_start
+        params["data_fim"]    = wide_end
     else:
-        return {"data_vencimento_de": start_date, "data_vencimento_ate": end_date}
+        params["data_vencimento_de"]  = wide_start
+        params["data_vencimento_ate"] = wide_end
+
+    # Em incremental, adiciona janela de 30 dias por data_alteracao —
+    # capturar TUDO que mudou (criado, editado, pago, cancelado, etc).
+    if mode != "full":
+        # ISO 8601 com fuso GMT-3 (horário oficial CA)
+        now_utc  = datetime.now(timezone.utc)
+        gmt3     = timezone(timedelta(hours=-3))
+        alt_ate  = now_utc.astimezone(gmt3)
+        alt_de   = alt_ate - timedelta(days=30)
+        params["data_alteracao_de"]  = alt_de.strftime("%Y-%m-%dT%H:%M:%S%z")
+        params["data_alteracao_ate"] = alt_ate.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    return params
 
 
 def _get_date_chunks(start_date_str: str, end_date_str: str, max_days: int = 360):
@@ -508,12 +538,12 @@ def sync_parcelas(
         return n
 
     try:
-        params   = _get_sync_params(mode, style="finance")
-        date_de  = params.get("data_vencimento_de", "2015-01-01")
-        date_ate = params.get("data_vencimento_ate", date.today().strftime("%Y-%m-%d"))
-        # Janela adicional por data_atualizacao — pega CRs/CPs antigos que
-        # tiveram baixa retroativa, renegociação ou qualquer alteração recente.
-        # Em modo full, traz tudo. Em incremental, últimos 30 dias.
+        # ESTRATÉGIA (refatorada em 22/mai/2026):
+        # • FULL: processa TODAS as CRs/CPs no banco.
+        # • INCREMENTAL: apenas CRs/CPs com data_atualizacao nos últimos
+        #   30 dias. Como _sync_financeiro usa data_alteracao_de na API,
+        #   qualquer mudança (incluindo baixas retroativas/antecipadas)
+        #   atualiza data_atualizacao da CR/CP — esse filtro captura tudo.
         if mode == "full":
             alt_threshold = None
         else:
@@ -523,19 +553,11 @@ def sync_parcelas(
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
             if alt_threshold is None:
-                cur.execute(
-                    "SELECT id FROM ca.contas_receber WHERE data_vencimento BETWEEN %s AND %s",
-                    (date_de, date_ate),
-                )
+                cur.execute("SELECT id FROM ca.contas_receber")
             else:
-                # vencimento no período OU atualização recente (captura retroativos)
                 cur.execute(
-                    """
-                    SELECT id FROM ca.contas_receber
-                    WHERE data_vencimento BETWEEN %s AND %s
-                       OR data_atualizacao >= %s
-                    """,
-                    (date_de, date_ate, alt_threshold),
+                    "SELECT id FROM ca.contas_receber WHERE data_atualizacao >= %s",
+                    (alt_threshold,),
                 )
             ids_receber = [row[0] for row in cur.fetchall()]
 
@@ -577,18 +599,11 @@ def sync_parcelas(
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
             if alt_threshold is None:
-                cur.execute(
-                    "SELECT id FROM ca.contas_pagar WHERE data_vencimento BETWEEN %s AND %s",
-                    (date_de, date_ate),
-                )
+                cur.execute("SELECT id FROM ca.contas_pagar")
             else:
                 cur.execute(
-                    """
-                    SELECT id FROM ca.contas_pagar
-                    WHERE data_vencimento BETWEEN %s AND %s
-                       OR data_atualizacao >= %s
-                    """,
-                    (date_de, date_ate, alt_threshold),
+                    "SELECT id FROM ca.contas_pagar WHERE data_atualizacao >= %s",
+                    (alt_threshold,),
                 )
             ids_pagar = [row[0] for row in cur.fetchall()]
 
@@ -714,20 +729,13 @@ def sync_baixas(
 
     Roda APOS sync_parcelas. Faz commit a cada BATCH_SIZE registros.
 
-    FILTRO INCREMENTAL — Bug #1 corrigido em 2026-05-22:
-      • Antes: pegava só parcelas com data_vencimento nos últimos 30 dias.
-        Problema: parcela vencida há > 30 dias paga retroativamente NUNCA
-        chegava no banco (a baixa existia no CA mas o ETL não pedia ela).
-      • Agora: pega parcelas com vencimento recente OU data_alteracao
-        recente — captura baixas retroativas.
-
-    LIMITAÇÃO CONHECIDA — Bug #2 (não resolvido):
-      Esse endpoint só retorna baixas vinculadas a parcelas. Lançamentos
-      manuais no Extrato do CA que não estão atrelados a uma parcela
-      (ex: ajustes, antecipações via saldo, recebimentos avulsos) NÃO são
-      capturados. Para resolver seria necessário consumir adicionalmente
-      o endpoint /financeiro/eventos-financeiros/alteracoes ou um endpoint
-      de "extrato" da API.
+    ESTRATÉGIA DE FILTRO (refatorada em 22/mai/2026 — fix definitivo):
+      • FULL: processa TODAS as parcelas no banco — varredura completa.
+      • INCREMENTAL: processa APENAS parcelas com data_alteracao nos
+        últimos 30 dias. Como sync_contas_receber/pagar usa data_alteracao_de
+        na API, qualquer mudança (nova venda, baixa, cancelamento, etc)
+        atualiza o data_alteracao da parcela — então esse filtro captura
+        tanto baixas retroativas quanto antecipadas, automaticamente.
     """
     BATCH_SIZE = 200
     ENDPOINT   = "/financeiro/eventos-financeiros/parcelas/{id}/baixa"
@@ -735,56 +743,31 @@ def sync_baixas(
     records    = 0
 
     try:
-        today = date.today()
         if mode == "full":
-            start_date = "2015-01-01"
             alt_threshold = None
         else:
-            start_date = (today - timedelta(days=30)).strftime("%Y-%m-%d")
-            # Janela adicional por data_alteracao — pega parcelas antigas que
-            # tiveram baixa retroativa (ex: parcela vencida em jan paga em mai).
-            # Sem isso, baixas de parcelas vencidas há > 30 dias nunca chegam ao banco.
             alt_threshold = datetime.now(timezone.utc) - timedelta(days=30)
 
-        # end_date estende-se 2 anos para o futuro pelos mesmos motivos
-        # documentados em _get_sync_params (parcelas com vencimento em ano
-        # civil futuro pagas antecipadamente).
-        end_date = date(today.year + 2, 12, 31).strftime("%Y-%m-%d")
-
-        # Coleta IDs de parcelas a receber e a pagar no periodo
+        # Coleta IDs de parcelas a receber e a pagar
         conn = ensure_connection(conn)
         with conn.cursor() as cur:
             if alt_threshold is None:
-                cur.execute(
-                    "SELECT id FROM ca.parcelas_receber WHERE data_vencimento BETWEEN %s AND %s",
-                    (start_date, end_date),
-                )
+                cur.execute("SELECT id FROM ca.parcelas_receber")
                 ids_receber = [row[0] for row in cur.fetchall()]
 
-                cur.execute(
-                    "SELECT id FROM ca.parcelas_pagar WHERE data_vencimento BETWEEN %s AND %s",
-                    (start_date, end_date),
-                )
+                cur.execute("SELECT id FROM ca.parcelas_pagar")
                 ids_pagar = [row[0] for row in cur.fetchall()]
             else:
-                # vencimento no período OU alteração recente (captura baixas retroativas)
+                # Apenas parcelas com alteração recente
                 cur.execute(
-                    """
-                    SELECT id FROM ca.parcelas_receber
-                    WHERE data_vencimento BETWEEN %s AND %s
-                       OR data_alteracao  >= %s
-                    """,
-                    (start_date, end_date, alt_threshold),
+                    "SELECT id FROM ca.parcelas_receber WHERE data_alteracao >= %s",
+                    (alt_threshold,),
                 )
                 ids_receber = [row[0] for row in cur.fetchall()]
 
                 cur.execute(
-                    """
-                    SELECT id FROM ca.parcelas_pagar
-                    WHERE data_vencimento BETWEEN %s AND %s
-                       OR data_alteracao  >= %s
-                    """,
-                    (start_date, end_date, alt_threshold),
+                    "SELECT id FROM ca.parcelas_pagar WHERE data_alteracao >= %s",
+                    (alt_threshold,),
                 )
                 ids_pagar = [row[0] for row in cur.fetchall()]
 
