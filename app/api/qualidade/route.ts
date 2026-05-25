@@ -76,27 +76,51 @@ export async function GET() {
       `)
 
       // ── Monitor de Conciliação ─────────────────────────────────────────────────
-      // Apenas contas com requer_conciliacao = true e ativo = true
+      // Doc CA §1.1: uma baixa é considerada CONCILIADA se:
+      //   (a) baixas.id_reconciliacao IS NOT NULL — preenchido pela API só
+      //       em algumas contas (bancos tradicionais), OU
+      //   (b) parcela.conciliado = true — campo bool da parcela, único
+      //       indicador para cartão / maquineta / contas auxiliares.
+      // A query usa LEFT JOIN com parcelas (receber + pagar via UNION) para
+      // pegar a flag conciliado de qualquer tipo de parcela.
       let conciliacaoRows: object[] = []
       try {
         const conciliacaoRes = await client.query(`
+          WITH parcelas_all AS (
+            SELECT id, conciliado FROM ca.parcelas_receber
+            UNION ALL
+            SELECT id, conciliado FROM ca.parcelas_pagar
+          ),
+          baixas_status AS (
+            SELECT
+              b.id,
+              b.conta_financeira_id,
+              CASE
+                WHEN b.id_reconciliacao IS NOT NULL THEN true
+                WHEN p.conciliado       IS TRUE     THEN true
+                ELSE false
+              END AS conciliada
+            FROM ca.baixas b
+            LEFT JOIN parcelas_all p ON p.id = b.evento_id
+          )
           SELECT
             cf.nome,
             cf.saldo_atual,
             cf.data_ultima_conciliacao,
-            (CURRENT_DATE - cf.data_ultima_conciliacao)          AS dias_sem_conciliar,
-            COUNT(b.id) FILTER (WHERE b.id_reconciliacao IS NULL) AS itens_nao_conciliados,
-            COUNT(b.id)                                           AS total_itens
+            (CURRENT_DATE - cf.data_ultima_conciliacao)        AS dias_sem_conciliar,
+            COUNT(bs.id) FILTER (WHERE NOT bs.conciliada)      AS itens_nao_conciliados,
+            COUNT(bs.id)                                       AS total_itens
           FROM ca.contas_financeiras cf
-          LEFT JOIN ca.baixas b ON b.conta_financeira_id = cf.id
+          LEFT JOIN baixas_status bs ON bs.conta_financeira_id = cf.id
           WHERE cf.ativo = true
             AND cf.requer_conciliacao = true
           GROUP BY cf.nome, cf.saldo_atual, cf.data_ultima_conciliacao
           ORDER BY dias_sem_conciliar DESC NULLS FIRST
         `)
         conciliacaoRows = conciliacaoRes.rows
-      } catch {
+      } catch (e) {
         // Coluna pode não existir ainda — trata graciosamente
+        console.error('[qualidade/conciliacao]', e)
         conciliacaoRows = []
       }
 
