@@ -288,6 +288,11 @@ def _map_parcela(raw: Dict[str, Any], tipo: str, evento_id: str) -> Dict[str, An
         "observacao":       _str(raw.get("observacao") or raw.get("notes") or "") or None,
         # API CA retorna `data_alteracao` (priorizamos esse campo)
         "data_alteracao":   _str(raw.get("data_alteracao") or raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        # Conciliação bancária — bool da API CA (doc §1.1).
+        # Para tipos de conta (cartão, maquineta, contas auxiliares) que NÃO
+        # populam baixas[].id_reconciliacao, este campo é a única indicação
+        # confiável de "bate com extrato".
+        "conciliado":       bool(raw.get("conciliado")) if raw.get("conciliado") is not None else None,
         "synced_at":        datetime.now(timezone.utc),
     }
     if tipo == "pagar":
@@ -809,9 +814,14 @@ def sync_baixas(
                     (alt_threshold,),
                 )
                 ids_receber = [row[0] for row in cur.fetchall()]
+                # Backfill: parcelas que ainda não tiveram data_alteracao OU
+                # conciliado populados (colunas novas). Lote limitado para
+                # evitar timeout. ORDER preserve progresso linear (já tocadas
+                # primeiro, ainda virgens depois).
                 cur.execute(
                     """SELECT id FROM ca.parcelas_receber
                        WHERE data_alteracao IS NULL
+                          OR conciliado     IS NULL
                        ORDER BY synced_at ASC NULLS FIRST
                        LIMIT %s""",
                     (NULL_BATCH_LIMIT_BAIXAS,),
@@ -826,6 +836,7 @@ def sync_baixas(
                 cur.execute(
                     """SELECT id FROM ca.parcelas_pagar
                        WHERE data_alteracao IS NULL
+                          OR conciliado     IS NULL
                        ORDER BY synced_at ASC NULLS FIRST
                        LIMIT %s""",
                     (NULL_BATCH_LIMIT_BAIXAS,),
