@@ -19,6 +19,24 @@ export function fDt(d: Date | null): string {
 }
 
 /**
+ * Parseia string 'YYYY-MM-DD' (ou ISO) como Date no fuso LOCAL do navegador.
+ *
+ * Por que existe: `new Date('2026-04-01T00:00:00.000Z')` em browser BR (UTC-3)
+ * retorna 31/03 21:00 local — `getMonth()` vira 2 (março). Em DRE isso
+ * desloca o registro pro mês anterior quando o servidor é UTC (Vercel).
+ *
+ * Esta função extrai os primeiros 10 chars (YYYY-MM-DD) e constrói o Date
+ * com componentes locais via `new Date(y, m-1, d)` — TZ-safe.
+ */
+export function parseDataLocal(s: string): Date | null {
+  if (!s) return null
+  const ymd = String(s).slice(0, 10)
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+}
+
+/**
  * Deriva a hierarquia de 2 níveis a partir do prefixo numérico do cat1.
  * "1.1.01 Aquisição | [Saber] BR" → { l1: "1 — Rec. Operacionais", l2: "1.1" }
  * Categorias sem prefixo numérico (Aportes, Financiamentos…) → l2 = l1
@@ -76,7 +94,11 @@ export function gM(cat: string): string {
 export function getMonths(data: Lancamento[]): string[] {
   const set = new Set<string>()
   for (const r of data) {
-    if (r.data) {
+    // Prioriza data_ym (calculado no PostgreSQL — sem ambiguidade de TZ).
+    // Fallback: extrai do Date local (consistente com parseDataLocal).
+    if (r.data_ym) {
+      set.add(r.data_ym)
+    } else if (r.data) {
       const ym = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
       set.add(ym)
     }

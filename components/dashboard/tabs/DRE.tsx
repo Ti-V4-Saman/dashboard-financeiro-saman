@@ -193,7 +193,9 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
     const r: Record<string, Record<string, Record<string, Record<string, number>>>> = {}
     for (const row of op) {
       if (!row.data) continue
-      const ym   = `${row.data.getFullYear()}-${String(row.data.getMonth() + 1).padStart(2, '0')}`
+      // Prioriza data_ym do backend (TZ-safe). Fallback: getFullYear/Month
+      // do Date (já criado com parseDataLocal — também TZ-safe).
+      const ym = row.data_ym ?? `${row.data.getFullYear()}-${String(row.data.getMonth() + 1).padStart(2, '0')}`
       const sign = row.tipo === 'Receita' ? 1 : -1
       const { l1, l2 } = parseCatHier(row.cat1)
       const l3 = row.cat1 || l2

@@ -14,6 +14,11 @@
  */
 export interface Lancamento {
   data: Date | null
+  // YYYY-MM derivado da data no backend (TO_CHAR do PostgreSQL).
+  // SEMPRE preferir este campo para agrupar/comparar por mês — `data.getMonth()`
+  // sofre off-by-one em servidores não-BR (Vercel UTC) pelo shift de timezone
+  // na serialização JSON. Ver fix em fix/dre-timezone-bug.
+  data_ym?: string
   desc: string
   fornecedor: string
   tipo: 'Receita' | 'Despesa'
