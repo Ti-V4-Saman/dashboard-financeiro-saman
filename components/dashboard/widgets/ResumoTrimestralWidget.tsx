@@ -130,10 +130,26 @@ const L1_DESP_FIN = '6.2 — Desp. Financeira'
 const L1_DEPREC   = '5 — Depreciações'
 const L1_IMP_LUC  = '7 — Impostos s/ Lucro'
 
-/** Calcula linhas da DRE para um mês específico. */
-function calcMes(ym: string, data: Lancamento[], metas: Meta[]): MesCalc {
+/** Calcula linhas da DRE para um mês específico.
+ *
+ *  `excludeBaixados=true` filtra lançamentos com situacao === 'Quitado'.
+ *  Usado para meses FUTUROS (M+1, M+2): em projeção, lançamentos já baixados
+ *  pertencem ao mês em que foram pagos (caixa), não ao mês de competência
+ *  futuro — evita double-counting com a visão de caixa realizado.
+ *  Mês de referência (M) mantém competência completa (inclui Quitado).
+ */
+function calcMes(
+  ym: string,
+  data: Lancamento[],
+  metas: Meta[],
+  excludeBaixados: boolean = false,
+): MesCalc {
   if (!ym) return { ym: '', hasData: false, linhas: [] }
-  const rows = data.filter(r => r.data_ym === ym)
+  const rows = data.filter(r => {
+    if (r.data_ym !== ym) return false
+    if (excludeBaixados && r.situacao === 'Quitado') return false
+    return true
+  })
   const metasMes = metas.filter(m => m.mes_referencia === ym)
 
   /** Soma assinada (receita + / despesa −) das categorias do(s) L1. */
@@ -531,10 +547,15 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
     })
   }, [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
 
-  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas), [mesRef,  dataFiltradaNaoTemporal, metas])
-  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas), [mesM1,   dataFiltradaNaoTemporal, metas])
-  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas), [mesM2,   dataFiltradaNaoTemporal, metas])
-  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas), [mesAnt,  dataFiltradaNaoTemporal, metas])
+  // Mês de referência: competência completa (inclui Quitado).
+  // Próximos meses (M+1, M+2): competência menos baixados — quitados já
+  // pertencem ao mês do pagamento (caixa), não ao mês de competência futuro.
+  // Mês anterior (para Δ): competência completa, para comparação consistente
+  // com o mês de referência.
+  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas, false), [mesRef,  dataFiltradaNaoTemporal, metas])
+  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas, true),  [mesM1,   dataFiltradaNaoTemporal, metas])
+  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas, true),  [mesM2,   dataFiltradaNaoTemporal, metas])
+  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas, false), [mesAnt,  dataFiltradaNaoTemporal, metas])
 
   const loading = (metasLoading && metas.length === 0) || (dataLoading && !apiResp)
 
@@ -554,7 +575,7 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
           color: 'var(--ink3)',
           margin: '2px 0 0',
         }}>
-          Mês de referência (filtro do dash) + 2 meses seguintes · valores incluem realizado + em aberto · meta cruzada via módulo Metas
+          Mês de referência (filtro do dash) + 2 meses seguintes · M: competência completa · M+1/M+2: só em aberto (quitados já contam no mês de pagamento) · meta cruzada via módulo Metas
         </p>
       </div>
 
