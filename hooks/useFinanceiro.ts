@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import type { Lancamento, Filters, Regime, TipoPeriodo, Atalho } from '@/lib/types'
+import { parseDataLocal } from '@/lib/utils'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -201,7 +202,10 @@ export function useFinanceiro() {
     if (!raw?.lancamentos || !Array.isArray(raw.lancamentos)) return []
     return raw.lancamentos.map(r => ({
       ...r,
-      data: r.data ? new Date(r.data) : null,
+      // Backend manda `data` como string 'YYYY-MM-DD' (sem timezone).
+      // Parseamos com componentes LOCAIS para evitar off-by-one do new Date(iso-Z)
+      // em browser BR (UTC-3) recebendo data UTC do Vercel.
+      data: r.data ? parseDataLocal(r.data as unknown as string) : null,
     }))
   }, [raw])
 

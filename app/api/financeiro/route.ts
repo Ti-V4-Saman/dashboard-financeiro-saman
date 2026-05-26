@@ -111,7 +111,11 @@ export async function GET(request: Request) {
           COALESCE(t.valor, 0)       AS valor,
           COALESCE(t.valor_dre, t.valor, 0) AS valordre,
           t.status                   AS situacao,
-          t.data                     AS data,
+          -- DATE forçada como string YYYY-MM-DD (sem timezone) para evitar
+          -- shift em servidores não-BR. O frontend parseia com componentes
+          -- locais. Ver fix do bug em fix/dre-timezone-bug.
+          TO_CHAR(t.data, 'YYYY-MM-DD') AS data,
+          TO_CHAR(t.data, 'YYYY-MM')    AS data_ym,
           COALESCE(t.origem, '')     AS origem,
           COALESCE(t.forma, '')      AS forma,
           COALESCE(cat.nome, '')     AS cat1,
@@ -167,7 +171,11 @@ export async function GET(request: Request) {
           COALESCE(t.valor, 0)       AS valor,
           COALESCE(t.valor_dre, t.valor, 0) AS valordre,
           t.status                   AS situacao,
-          t.data                     AS data,
+          -- DATE forçada como string YYYY-MM-DD (sem timezone) para evitar
+          -- shift em servidores não-BR. O frontend parseia com componentes
+          -- locais. Ver fix do bug em fix/dre-timezone-bug.
+          TO_CHAR(t.data, 'YYYY-MM-DD') AS data,
+          TO_CHAR(t.data, 'YYYY-MM')    AS data_ym,
           COALESCE(t.origem, '')     AS origem,
           COALESCE(t.forma, '')      AS forma,
           COALESCE(cat.nome, '')     AS cat1,
@@ -196,10 +204,16 @@ export async function GET(request: Request) {
       const cat1Name = row.cat1 || '(em branco)'
       const cc1Name  = row.cc1  || '(em branco)'
 
-      const parsedDate: Date | null = row.data ? new Date(row.data) : null
+      // data já vem como string 'YYYY-MM-DD' do SQL (TO_CHAR). NÃO converter
+      // para Date aqui — JSON serializaria como ISO-Z e em browser com fuso
+      // negativo (BR) cria off-by-one day. Quem precisar de Date parseia
+      // com componentes locais no client (via parseLocalYMD em lib/utils).
+      const dataStr: string | null = row.data || null
+      const dataYm:  string | null = row.data_ym || (dataStr ? dataStr.slice(0,7) : null)
 
       return {
-        data:       parsedDate,
+        data:       dataStr as unknown as Date | null,   // tipo Lancamento.data ainda é Date — frontend converte
+        data_ym:    dataYm ?? undefined,
         desc:       row.desc || row.fornecedor,
         fornecedor: row.fornecedor,
         tipo:       row.tipo as 'Receita' | 'Despesa',
