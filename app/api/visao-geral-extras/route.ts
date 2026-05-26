@@ -14,19 +14,6 @@ export const dynamic = 'force-dynamic'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ValorPct { valor: number; pct: number }
-
-interface IndicadoresData {
-  receitaLiquida:  number
-  mgOperacional:   ValorPct
-  mgContribuicao:  ValorPct
-  ebitda:          ValorPct
-  csp:             ValorPct
-  comercial:       ValorPct
-  administrativa:  ValorPct
-  gerais:          ValorPct
-}
-
 interface ContratosData {
   ativos:            number
   receitaRecorrente: number
@@ -190,116 +177,13 @@ export async function GET(request: Request) {
       }
 
       // ── 4. Blocos de resumo ───────────────────────────────────────────────
+      // Bloco "Indicadores" (DRE resumida) foi removido — substituido pelo
+      // widget ResumoTrimestralWidget (calculado client-side a partir do
+      // array de lancamentos ja em memoria, sem RPC dedicada).
       let blocos: {
-        indicadores: IndicadoresData | null
-        contratos:   ContratosData   | null
-        notas:       NotasData       | null
-      } = { indicadores: null, contratos: null, notas: null }
-
-      // 4a. Indicadores (DRE resumida do período)
-      if (de && ate) {
-        try {
-          // CAIXA → fonte = ca.baixas (uma linha por baixa, valor = valor_bruto)
-          // COMPETÊNCIA → fonte = ca.contas_receber/pagar com COALESCE(comp, venc)
-          const indSql = regime === 'caixa' ? `
-            SELECT
-              t.tipo,
-              COALESCE(cat.nome, '') AS cat_nome,
-              COALESCE(SUM(t.valor), 0)::numeric AS valor
-            FROM (
-              SELECT 'Receita' AS tipo, cr.categoria_id AS categoria_id,
-                     b.valor_bruto AS valor, COALESCE(cr.origem, '') AS origem
-              FROM ca.baixas b
-              JOIN ca.contas_receber cr ON cr.id = b.evento_id
-              WHERE b.tipo = 'RECEITA'
-                AND cr.status NOT IN ('Cancelado','Renegociado')
-                AND b.data_pagamento BETWEEN $1 AND $2
-              UNION ALL
-              SELECT 'Despesa', cp.categoria_id,
-                     b.valor_bruto, COALESCE(cp.origem, '')
-              FROM ca.baixas b
-              JOIN ca.contas_pagar cp ON cp.id = b.evento_id
-              WHERE b.tipo = 'DESPESA'
-                AND cp.status NOT IN ('Cancelado','Renegociado')
-                AND b.data_pagamento BETWEEN $1 AND $2
-            ) t
-            LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
-            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
-            GROUP BY t.tipo, cat.nome
-          ` : `
-            SELECT
-              t.tipo,
-              COALESCE(cat.nome, '') AS cat_nome,
-              COALESCE(SUM(t.total), 0)::numeric AS valor
-            FROM (
-              SELECT 'Receita' AS tipo, categoria_id, total, COALESCE(origem,'') AS origem
-              FROM ca.contas_receber
-              WHERE status NOT IN ('Cancelado','Renegociado')
-                AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
-              UNION ALL
-              SELECT 'Despesa', categoria_id, total, COALESCE(origem,'')
-              FROM ca.contas_pagar
-              WHERE status NOT IN ('Cancelado','Renegociado')
-                AND COALESCE(data_competencia, data_vencimento) BETWEEN $1 AND $2
-            ) t
-            LEFT JOIN ca.categorias cat ON cat.id = t.categoria_id
-            WHERE t.origem NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
-            GROUP BY t.tipo, cat.nome
-          `
-          const indRes = await client.query<{ tipo: string; cat_nome: string; valor: string }>(indSql, [de, ate])
-
-          // numPrefix — extracts leading numeric prefix (e.g. "4.1.01 Foo" → 4.1)
-          const numPfx = (s: string): number => {
-            const m = s.match(/^(\d+(?:\.\d+)?)/)
-            return m ? Number(m[1]) : 999
-          }
-
-          const catRows = indRes.rows.map(r => ({
-            tipo:     r.tipo,
-            cat_nome: r.cat_nome,
-            valor:    Number(r.valor),
-          }))
-
-          // Signed accumulator mirroring DRE groupSum
-          const groupSum = (maxP: number) =>
-            catRows.reduce((s, r) => {
-              if (numPfx(r.cat_nome) <= maxP)
-                return s + (r.tipo === 'Receita' ? r.valor : -r.valor)
-              return s
-            }, 0)
-
-          // Absolute sum for a category band (Despesa only)
-          const despBand = (pfxMin: number, pfxMax: number) =>
-            catRows
-              .filter(r => r.tipo === 'Despesa' && numPfx(r.cat_nome) >= pfxMin && numPfx(r.cat_nome) < pfxMax)
-              .reduce((s, r) => s + r.valor, 0)
-
-          const recLiq      = groupSum(2.99)
-          const lubruto     = groupSum(3.99)
-          const ebitda      = groupSum(4.99)
-          const cspAbs      = despBand(3, 4)
-          const comercialAbs= despBand(4.1, 4.2)
-          const adminAbs    = despBand(4.2, 4.3)
-          const geraisAbs   = despBand(4.3, 4.4)
-          const margContrib = lubruto - comercialAbs
-
-          const pct = (v: number) => recLiq > 0 ? Math.round(v / recLiq * 1000) / 10 : 0
-          const vp  = (v: number) => ({ valor: Math.round(v * 100) / 100, pct: pct(v) })
-
-          blocos.indicadores = {
-            receitaLiquida: Math.round(recLiq * 100) / 100,
-            mgOperacional:  vp(lubruto),
-            mgContribuicao: vp(margContrib),
-            ebitda:         vp(ebitda),
-            csp:            vp(cspAbs),
-            comercial:      vp(comercialAbs),
-            administrativa: vp(adminAbs),
-            gerais:         vp(geraisAbs),
-          }
-        } catch (e) {
-          console.error('[blocos/indicadores]', e)
-        }
-      }
+        contratos: ContratosData | null
+        notas:     NotasData     | null
+      } = { contratos: null, notas: null }
 
       // 4b. Contratos (fotografia atual — independe do filtro)
       try {

@@ -4,19 +4,6 @@ import { fR } from '@/lib/utils'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface ValorPct { valor: number; pct: number }
-
-export interface IndicadoresData {
-  receitaLiquida:  number
-  mgOperacional:   ValorPct
-  mgContribuicao:  ValorPct
-  ebitda:          ValorPct
-  csp:             ValorPct
-  comercial:       ValorPct
-  administrativa:  ValorPct
-  gerais:          ValorPct
-}
-
 export interface ContratosData {
   ativos:            number
   receitaRecorrente: number
@@ -40,9 +27,8 @@ export interface NotasData {
 }
 
 export interface BlocosData {
-  indicadores: IndicadoresData | null
-  contratos:   ContratosData   | null
-  notas:       NotasData       | null
+  contratos: ContratosData | null
+  notas:     NotasData     | null
 }
 
 // ── Semantic colours ───────────────────────────────────────────────────────────
@@ -221,29 +207,6 @@ function Row({
   )
 }
 
-// Dual value row: pct col + R$ value — single line
-function DualRow({
-  label,
-  vp,
-  color,
-  last = false,
-}: {
-  label: string
-  vp: ValorPct
-  color?: string
-  last?: boolean
-}) {
-  return (
-    <Row
-      label={label}
-      value={fR(vp.valor)}
-      pct={pctFmt(vp.pct)}
-      color={color}
-      last={last}
-    />
-  )
-}
-
 // Skeleton placeholder
 function Skeleton({ rows = 6 }: { rows?: number }) {
   return (
@@ -261,30 +224,6 @@ function Skeleton({ rows = 6 }: { rows?: number }) {
         />
       ))}
     </div>
-  )
-}
-
-// ── Card: Indicadores ─────────────────────────────────────────────────────────
-
-function CardIndicadores({ data }: { data: IndicadoresData | null }) {
-  return (
-    <CardShell>
-      <CardHeader tag="Período" title="Indicadores" />
-      {!data ? (
-        <Skeleton rows={8} />
-      ) : (
-        <>
-          <HighlightRow label="Receita líquida" value={fR(data.receitaLiquida)} color={C.green} />
-          <DualRow label="Mg. operacional"  vp={data.mgOperacional}  color={C.green} />
-          <DualRow label="Mg. contribuição" vp={data.mgContribuicao} color={C.green} />
-          <DualRow label="EBITDA"           vp={data.ebitda}         color={C.green} />
-          <DualRow label="CSP"              vp={data.csp}            color={C.red}   />
-          <DualRow label="Comercial"        vp={data.comercial}      color={C.red}   />
-          <DualRow label="Administrativa"   vp={data.administrativa} color={C.red}   />
-          <DualRow label="Gerais"           vp={data.gerais}         color={C.red}   last />
-        </>
-      )}
-    </CardShell>
   )
 }
 
@@ -405,13 +344,14 @@ export function BlocosResumo({ blocos, loading }: Props) {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)',
+        // 2 colunas: Contratos + Notas Fiscais (CardIndicadores removido —
+        // substituido pelo widget ResumoTrimestralWidget no commit posterior).
+        gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)',
         gap: 12,
       }}
     >
-      <CardIndicadores data={loading ? null : (blocos?.indicadores ?? null)} />
-      <CardContratos   data={loading ? null : (blocos?.contratos   ?? null)} />
-      <CardNotas       data={loading ? null : (blocos?.notas        ?? null)} />
+      <CardContratos data={loading ? null : (blocos?.contratos ?? null)} />
+      <CardNotas     data={loading ? null : (blocos?.notas     ?? null)} />
     </div>
   )
 }

@@ -15,10 +15,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
 import { InsightsPeriodo } from '@/components/dashboard/InsightsPeriodo'
 import { BlocosResumo, type BlocosData } from '@/components/dashboard/BlocosResumo'
-import PontoEquilibrioWidget from '@/components/dashboard/widgets/PontoEquilibrioWidget'
+import ResumoTrimestralWidget from '@/components/dashboard/widgets/ResumoTrimestralWidget'
 
 interface Props {
   data: Lancamento[]
+  allData: Lancamento[]
   filters?: Filters
 }
 
@@ -77,7 +78,7 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
   )
 }
 
-export function VisaoGeral({ data, filters }: Props) {
+export function VisaoGeral({ data, allData, filters }: Props) {
   // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
   // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
   // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
@@ -284,10 +285,12 @@ export function VisaoGeral({ data, filters }: Props) {
         />
       </div>
 
-      {/* Linha 2: 3 blocos de resumo */}
-      {/* Widget Ponto de Equilíbrio — 3 meses (sempre caixa, ignora filtro de período) */}
-      <PontoEquilibrioWidget />
+      {/* Linha 2: Resumo Trimestral — Competência (3 cards: M, M+1, M+2) */}
+      {filters && (
+        <ResumoTrimestralWidget allData={allData} filters={filters} />
+      )}
 
+      {/* Linha 3: blocos de resumo (Contratos + Notas Fiscais) */}
       <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
 
       {/* Linha 3: Top 10 */}
