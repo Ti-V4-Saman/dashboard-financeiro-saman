@@ -93,7 +93,7 @@ export function DashboardLayout({
               pointerEvents: isRefetching ? 'none' : 'auto',
             }}
           >
-            {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
+            {activeTab === 'visao'       && <VisaoGeral data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
