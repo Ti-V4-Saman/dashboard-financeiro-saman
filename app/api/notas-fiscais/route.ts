@@ -23,21 +23,28 @@ const pool = new Pool({
 
 export interface NotaRow {
   id: string                                          // id NF, ou venda_id quando sem NF
-  kind: 'emitida' | 'cancelada' | 'falha' | 'paga_sem_nf' | 'a_receber'
+  kind: 'emitida' | 'cancelada' | 'falha' | 'recebido_sem_nf' | 'a_receber'
   numero: number | null                               // número da NF (null para sem NF)
   lancamento: string                                  // descricao da CR
   cliente: string
   valor: number
   data_emissao: string | null                         // YYYY-MM-DD (null para sem NF)
   data_referencia: string | null                      // data da venda/baixa/competência/vencimento
-  status_raw: string                                  // EMITIDA, CANCELADA, CANCELAMENTO_MANUAL, FALHA, PAGA_SEM_NF, A_RECEBER
+  status_raw: string                                  // EMITIDA, CANCELADA, CANCELAMENTO_MANUAL, FALHA, RECEBIDO_SEM_NF, A_RECEBER
   tempo_emissao_dias: number | null                   // dias entre data_referencia e data_emissao
 }
 
 interface Summary {
   emitidas:           { qtd: number; valor: number }
-  pagas_sem_nf:       { qtd: number; valor: number }   // baixa no período sem NF emitida
-  a_receber:          { qtd: number; valor: number }   // venc no período, em aberto/atrasado/parcial, sem NF emitida
+  // recebidos_sem_nf = vendas BAIXADAS E CONCILIADAS no período sem NF emitida.
+  // Regra de "recebida+conciliada" depende do tipo da venda:
+  //   • avulsa  (vendas.id_contrato IS NULL):    pelo menos 1 parcela conciliada
+  //   • contrato (vendas.id_contrato IS NOT NULL): todas as parcelas conciliadas
+  // Conciliada = parcela.conciliado=true OU baixa.id_reconciliacao IS NOT NULL.
+  recebidos_sem_nf:   { qtd: number; valor: number }
+  // a_receber = venc no período, em aberto/atrasado/parcial, sem NF emitida.
+  // Sem obrigação de NF ainda — informativo, não é alerta.
+  a_receber:          { qtd: number; valor: number }
   cobertura_pct:      number
   vendas_unicas:      number
   canceladas_falha:   { qtd: number; canceladas: number; falhas: number; valor: number }
@@ -60,21 +67,48 @@ export async function GET(request: Request) {
 
     const client = await pool.connect()
     try {
-      // ── 1. Vendas únicas no período (com dados básicos) ─────────────────────
-      // Em caixa: vendas com baixa no período. Em competência: vendas cuja CR
-      // tem data_competencia no período. Pegamos a CR "principal" (menor data)
-      // para descricao, cliente e total.
-      // GROUP BY apenas id_venda — UMA linha por venda única, mesmo que ela
-      // tenha múltiplas parcelas (CRs) com descricoes diferentes (ex: "1/12",
-      // "2/12"...). Usamos MIN/MAX para escolher representantes determinísticos.
+      // ── 1. Vendas RECEBIDAS+CONCILIADAS no período ─────────────────────────
+      // Regra de negócio (acordada com financeiro):
+      //   Lançamento só conta como "Recebido" se estiver BAIXADO E CONCILIADO
+      //   (dinheiro já entrou de fato). Só essas vendas geram obrigação de NF.
+      //
+      // Definição de "conciliada" no nível PARCELA:
+      //   parcela.conciliado IS TRUE  OR
+      //   EXISTS (baixa dessa parcela com id_reconciliacao IS NOT NULL)
+      //
+      // Definição de "venda recebida+conciliada":
+      //   • avulsa  (vendas.id_contrato IS NULL):
+      //       PELO MENOS 1 parcela da venda está conciliada
+      //   • contrato (vendas.id_contrato IS NOT NULL):
+      //       TODAS as parcelas da venda estão conciliadas
+      //
+      // Em CAIXA, o período é a data da baixa (data_pagamento).
+      // Em COMPETÊNCIA, o período é data_competencia da CR (recebimento pode
+      // ter sido em outra data, basta a venda ter ficado conciliada).
       const vendasSql = regime === 'caixa' ? `
-        WITH base AS (
+        WITH parcelas_status AS (
           SELECT
             cr.id_venda,
-            MIN(cr.descricao)                            AS descricao_ref,
-            MIN(cr.pessoa_id::text)                      AS pessoa_id_txt,
-            MIN(b.data_pagamento)                        AS data_ref,
-            SUM(b.valor_bruto)                           AS valor
+            cr.descricao,
+            cr.pessoa_id,
+            pr.id AS parcela_id,
+            (pr.conciliado IS TRUE OR EXISTS (
+              SELECT 1 FROM ca.baixas b2
+              WHERE b2.evento_id = pr.id AND b2.id_reconciliacao IS NOT NULL
+            )) AS conciliada
+          FROM ca.contas_receber cr
+          JOIN ca.parcelas_receber pr ON pr.conta_receber_id = cr.id
+          WHERE cr.id_venda IS NOT NULL
+            AND cr.status NOT IN ('Cancelado','Renegociado')
+            AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+        ),
+        baixas_periodo AS (
+          SELECT
+            cr.id_venda,
+            MIN(cr.descricao)                AS descricao_ref,
+            MIN(cr.pessoa_id::text)          AS pessoa_id_txt,
+            MIN(b.data_pagamento)            AS data_ref,
+            SUM(b.valor_bruto)               AS valor
           FROM ca.baixas b
           JOIN ca.contas_receber cr ON cr.id = b.evento_id
           WHERE b.tipo = 'RECEITA'
@@ -83,17 +117,50 @@ export async function GET(request: Request) {
             AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
             AND b.data_pagamento BETWEEN $1 AND $2
           GROUP BY cr.id_venda
+        ),
+        vendas_recebidas_conciliadas AS (
+          SELECT bp.*
+          FROM baixas_periodo bp
+          LEFT JOIN ca.vendas v ON v.id = bp.id_venda
+          WHERE
+            -- Avulsa: pelo menos 1 parcela conciliada
+            (v.id_contrato IS NULL AND EXISTS (
+              SELECT 1 FROM parcelas_status ps
+              WHERE ps.id_venda = bp.id_venda AND ps.conciliada
+            ))
+            OR
+            -- Contrato: TODAS as parcelas conciliadas
+            (v.id_contrato IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM parcelas_status ps
+              WHERE ps.id_venda = bp.id_venda AND NOT ps.conciliada
+            ))
         )
         SELECT
-          base.id_venda::text                       AS id_venda,
-          base.descricao_ref                        AS descricao,
-          COALESCE(p.nome, '')                      AS cliente,
-          base.data_ref::text                       AS data_ref,
-          base.valor::float                         AS valor
-        FROM base
-        LEFT JOIN ca.pessoas p ON p.id::text = base.pessoa_id_txt
+          vrc.id_venda::text                AS id_venda,
+          vrc.descricao_ref                 AS descricao,
+          COALESCE(p.nome, '')              AS cliente,
+          vrc.data_ref::text                AS data_ref,
+          vrc.valor::float                  AS valor
+        FROM vendas_recebidas_conciliadas vrc
+        LEFT JOIN ca.pessoas p ON p.id::text = vrc.pessoa_id_txt
       ` : `
-        WITH base AS (
+        WITH parcelas_status AS (
+          SELECT
+            cr.id_venda,
+            cr.descricao,
+            cr.pessoa_id,
+            pr.id AS parcela_id,
+            (pr.conciliado IS TRUE OR EXISTS (
+              SELECT 1 FROM ca.baixas b2
+              WHERE b2.evento_id = pr.id AND b2.id_reconciliacao IS NOT NULL
+            )) AS conciliada
+          FROM ca.contas_receber cr
+          JOIN ca.parcelas_receber pr ON pr.conta_receber_id = cr.id
+          WHERE cr.id_venda IS NOT NULL
+            AND cr.status NOT IN ('Cancelado','Renegociado')
+            AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA','SALDO_CONTA_BANCARIA')
+        ),
+        vendas_competencia AS (
           SELECT
             cr.id_venda,
             MIN(cr.descricao)                                       AS descricao_ref,
@@ -108,13 +175,24 @@ export async function GET(request: Request) {
           GROUP BY cr.id_venda
         )
         SELECT
-          base.id_venda::text                AS id_venda,
-          base.descricao_ref                 AS descricao,
-          COALESCE(p.nome, '')               AS cliente,
-          base.data_ref::text                AS data_ref,
-          base.valor::float                  AS valor
-        FROM base
-        LEFT JOIN ca.pessoas p ON p.id::text = base.pessoa_id_txt
+          vc.id_venda::text                AS id_venda,
+          vc.descricao_ref                 AS descricao,
+          COALESCE(p.nome, '')             AS cliente,
+          vc.data_ref::text                AS data_ref,
+          vc.valor::float                  AS valor
+        FROM vendas_competencia vc
+        LEFT JOIN ca.vendas v ON v.id = vc.id_venda
+        LEFT JOIN ca.pessoas p ON p.id::text = vc.pessoa_id_txt
+        WHERE
+          (v.id_contrato IS NULL AND EXISTS (
+            SELECT 1 FROM parcelas_status ps
+            WHERE ps.id_venda = vc.id_venda AND ps.conciliada
+          ))
+          OR
+          (v.id_contrato IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM parcelas_status ps
+            WHERE ps.id_venda = vc.id_venda AND NOT ps.conciliada
+          ))
       `
 
       // ── 2. NFs do período (qualquer status) ────────────────────────────────
@@ -177,11 +255,13 @@ export async function GET(request: Request) {
         }>(aReceberSql, [de, ate]),
       ])
 
-      // ── 2c. NFs emitidas vinculadas a qualquer venda do período ───────────
-      // (vendas pagas + a receber). Cobertura considera ambos os conjuntos.
-      const idsPagas    = vendasRes.rows.map(v => v.id_venda)
-      const idsAReceber = aReceberRes.rows.map(v => v.id_venda)
-      const todosIds    = Array.from(new Set([...idsPagas, ...idsAReceber]))
+      // ── 2c. NFs emitidas vinculadas às vendas do período ───────────────────
+      // Apenas vendas RECEBIDAS+CONCILIADAS contam para cobertura (são as
+      // que geram obrigação de NF). "A receber" sem conciliação ainda não
+      // tem obrigação de emissão.
+      const idsRecebidos = vendasRes.rows.map(v => v.id_venda)
+      const idsAReceber  = aReceberRes.rows.map(v => v.id_venda)
+      const todosIds     = Array.from(new Set([...idsRecebidos, ...idsAReceber]))
 
       const nfsVinculadasEmitidas = new Set<string>()  // id_venda
       if (todosIds.length > 0) {
@@ -229,29 +309,31 @@ export async function GET(request: Request) {
         })
       }
 
-      // 4b. Vendas PAGAS no período sem NF emitida (URGENTE)
+      // 4b. Vendas RECEBIDAS+CONCILIADAS no período sem NF emitida (URGENTE)
+      // Estas têm obrigação de NF — dinheiro entrou de fato.
       for (const venda of vendasRes.rows) {
         if (nfsVinculadasEmitidas.has(venda.id_venda)) continue
         rows.push({
           id:                  venda.id_venda,
-          kind:                'paga_sem_nf',
+          kind:                'recebido_sem_nf',
           numero:              null,
           lancamento:          venda.descricao,
           cliente:             venda.cliente,
           valor:               venda.valor,
           data_emissao:        null,
           data_referencia:     venda.data_ref,
-          status_raw:          'PAGA_SEM_NF',
+          status_raw:          'RECEBIDO_SEM_NF',
           tempo_emissao_dias:  null,
         })
       }
 
       // 4c. Vendas A RECEBER no período (vencimento no mês) sem NF emitida
-      // Filtra para não duplicar — não inclui vendas que já estão em vendasRes
-      // (essas já foram tratadas em 4b como pagas)
-      const idsPagasSet = new Set(idsPagas)
+      // Não é alerta — não há obrigação de NF antes do dinheiro entrar de
+      // fato. Filtra para não duplicar — não inclui vendas que já estão como
+      // "Recebido+Conciliado" (tratadas em 4b).
+      const idsRecebidosSet = new Set(idsRecebidos)
       for (const venda of aReceberRes.rows) {
-        if (idsPagasSet.has(venda.id_venda))           continue  // já é "paga sem NF" ou tem NF
+        if (idsRecebidosSet.has(venda.id_venda))       continue  // já é "Recebido sem NF" ou tem NF
         if (nfsVinculadasEmitidas.has(venda.id_venda)) continue  // já tem NF — sai do "sem NF"
         rows.push({
           id:                  venda.id_venda,
@@ -268,20 +350,21 @@ export async function GET(request: Request) {
       }
 
       // ── 5. Agregar summary ─────────────────────────────────────────────────
-      const emitidas    = rows.filter(r => r.kind === 'emitida')
-      const pagasSemNf  = rows.filter(r => r.kind === 'paga_sem_nf')
-      const aReceber    = rows.filter(r => r.kind === 'a_receber')
-      const canc        = rows.filter(r => r.kind === 'cancelada')
-      const falhas      = rows.filter(r => r.kind === 'falha')
+      const emitidas       = rows.filter(r => r.kind === 'emitida')
+      const recebidosSemNf = rows.filter(r => r.kind === 'recebido_sem_nf')
+      const aReceber       = rows.filter(r => r.kind === 'a_receber')
+      const canc           = rows.filter(r => r.kind === 'cancelada')
+      const falhas         = rows.filter(r => r.kind === 'falha')
 
-      // cobertura = vendas únicas (pagas + a receber, sem duplicar) com NF
-      // emitida / total. Inclui ambos os conjuntos pois ambos deveriam ter NF.
-      const vendasUnicas = todosIds.length
-      const vendasComNFEmitida = todosIds.filter(id =>
+      // cobertura = vendas RECEBIDAS+CONCILIADAS com NF emitida / total
+      // recebidas+conciliadas. Apenas essas têm obrigação de NF.
+      // "A receber" sem conciliação NÃO entra no denominador (sem obrigação).
+      const vendasRecebidasConciliadas = idsRecebidos.length
+      const vendasComNFEmitida = idsRecebidos.filter(id =>
         nfsVinculadasEmitidas.has(id),
       ).length
-      const coberturaPct = vendasUnicas > 0
-        ? Math.min(100, Math.round(vendasComNFEmitida / vendasUnicas * 100))
+      const coberturaPct = vendasRecebidasConciliadas > 0
+        ? Math.min(100, Math.round(vendasComNFEmitida / vendasRecebidasConciliadas * 100))
         : 100
 
       const tempos = emitidas
@@ -296,16 +379,16 @@ export async function GET(request: Request) {
           qtd:   emitidas.length,
           valor: round2(emitidas.reduce((s, r) => s + r.valor, 0)),
         },
-        pagas_sem_nf: {
-          qtd:   pagasSemNf.length,
-          valor: round2(pagasSemNf.reduce((s, r) => s + r.valor, 0)),
+        recebidos_sem_nf: {
+          qtd:   recebidosSemNf.length,
+          valor: round2(recebidosSemNf.reduce((s, r) => s + r.valor, 0)),
         },
         a_receber: {
           qtd:   aReceber.length,
           valor: round2(aReceber.reduce((s, r) => s + r.valor, 0)),
         },
         cobertura_pct: coberturaPct,
-        vendas_unicas: vendasUnicas,
+        vendas_unicas: vendasRecebidasConciliadas,
         canceladas_falha: {
           qtd:         canc.length + falhas.length,
           canceladas:  canc.length,

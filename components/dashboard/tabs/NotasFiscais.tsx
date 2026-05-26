@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input'
 
 interface NotaRow {
   id: string
-  kind: 'emitida' | 'cancelada' | 'falha' | 'paga_sem_nf' | 'a_receber'
+  kind: 'emitida' | 'cancelada' | 'falha' | 'recebido_sem_nf' | 'a_receber'
   numero: number | null
   lancamento: string
   cliente: string
@@ -24,10 +24,10 @@ interface NotaRow {
 
 interface Summary {
   emitidas:           { qtd: number; valor: number }
-  pagas_sem_nf:       { qtd: number; valor: number }
-  a_receber:          { qtd: number; valor: number }
+  recebidos_sem_nf:   { qtd: number; valor: number }   // baixado + conciliado, sem NF
+  a_receber:          { qtd: number; valor: number }   // venc no período em aberto/atrasado/parcial (sem obrigação de NF)
   cobertura_pct:      number
-  vendas_unicas:      number
+  vendas_unicas:      number                            // = vendas recebidas+conciliadas no período
   canceladas_falha:   { qtd: number; canceladas: number; falhas: number; valor: number }
   tempo_medio_dias:   number | null
 }
@@ -43,7 +43,7 @@ interface Props {
 
 // ── KPI Card ─────────────────────────────────────────────────────────────────
 
-type FilterKey = 'todas' | 'emitida' | 'paga_sem_nf' | 'a_receber' | 'cancelada_falha'
+type FilterKey = 'todas' | 'emitida' | 'recebido_sem_nf' | 'a_receber' | 'cancelada_falha'
 
 function KpiCard({
   label,
@@ -91,11 +91,11 @@ function KpiCard({
 
 function StatusBadge({ kind }: { kind: NotaRow['kind'] }) {
   const cfg: Record<NotaRow['kind'], { label: string; bg: string; fg: string }> = {
-    emitida:     { label: 'Emitida',      bg: 'var(--green-l)', fg: 'var(--green)' },
-    paga_sem_nf: { label: 'Paga sem NF',  bg: 'var(--red-l)',   fg: 'var(--red)' },
-    a_receber:   { label: 'A receber',    bg: 'var(--surf3)',   fg: 'var(--ink2)' },
-    cancelada:   { label: 'Cancelada',    bg: 'var(--red-l)',   fg: 'var(--red)' },
-    falha:       { label: 'Falha',        bg: 'var(--red-l)',   fg: 'var(--red)' },
+    emitida:         { label: 'Emitida',           bg: 'var(--green-l)', fg: 'var(--green)' },
+    recebido_sem_nf: { label: 'Recebido sem NF',   bg: 'var(--red-l)',   fg: 'var(--red)' },
+    a_receber:       { label: 'A receber',         bg: 'var(--surf3)',   fg: 'var(--ink2)' },
+    cancelada:       { label: 'Cancelada',         bg: 'var(--red-l)',   fg: 'var(--red)' },
+    falha:           { label: 'Falha',             bg: 'var(--red-l)',   fg: 'var(--red)' },
   }
   const c = cfg[kind]
   return (
@@ -166,9 +166,9 @@ export function NotasFiscais({ filters }: Props) {
   const rowsFiltradas = useMemo(() => {
     const rows = data?.rows ?? []
     let arr = rows
-    if (filterKey === 'emitida')          arr = arr.filter(r => r.kind === 'emitida')
-    else if (filterKey === 'paga_sem_nf') arr = arr.filter(r => r.kind === 'paga_sem_nf')
-    else if (filterKey === 'a_receber')   arr = arr.filter(r => r.kind === 'a_receber')
+    if (filterKey === 'emitida')              arr = arr.filter(r => r.kind === 'emitida')
+    else if (filterKey === 'recebido_sem_nf') arr = arr.filter(r => r.kind === 'recebido_sem_nf')
+    else if (filterKey === 'a_receber')       arr = arr.filter(r => r.kind === 'a_receber')
     else if (filterKey === 'cancelada_falha')
                                           arr = arr.filter(r => r.kind === 'cancelada' || r.kind === 'falha')
     if (debouncedSearch) {
@@ -223,18 +223,18 @@ export function NotasFiscais({ filters }: Props) {
           onClick={() => setFilterKey(filterKey === 'emitida' ? 'todas' : 'emitida')}
         />
         <KpiCard
-          label="Pagas sem NF"
-          value={s ? s.pagas_sem_nf.qtd.toLocaleString('pt-BR') : '—'}
-          sub={s ? fR(s.pagas_sem_nf.valor) : undefined}
-          color={(s?.pagas_sem_nf.qtd ?? 0) > 0 ? 'var(--red)' : 'var(--green)'}
-          active={filterKey === 'paga_sem_nf'}
-          onClick={() => setFilterKey(filterKey === 'paga_sem_nf' ? 'todas' : 'paga_sem_nf')}
+          label="Recebidos sem NF"
+          value={s ? s.recebidos_sem_nf.qtd.toLocaleString('pt-BR') : '—'}
+          sub={s ? fR(s.recebidos_sem_nf.valor) : undefined}
+          color={(s?.recebidos_sem_nf.qtd ?? 0) > 0 ? 'var(--red)' : 'var(--green)'}
+          active={filterKey === 'recebido_sem_nf'}
+          onClick={() => setFilterKey(filterKey === 'recebido_sem_nf' ? 'todas' : 'recebido_sem_nf')}
         />
         <KpiCard
-          label="A receber sem NF"
+          label="A receber no período"
           value={s ? s.a_receber.qtd.toLocaleString('pt-BR') : '—'}
-          sub={s ? fR(s.a_receber.valor) : undefined}
-          color={(s?.a_receber.qtd ?? 0) > 0 ? 'var(--amber)' : 'var(--ink)'}
+          sub={s ? fR(s.a_receber.valor) : 'sem obrigação de NF ainda'}
+          color="var(--ink2)"
           active={filterKey === 'a_receber'}
           onClick={() => setFilterKey(filterKey === 'a_receber' ? 'todas' : 'a_receber')}
         />
