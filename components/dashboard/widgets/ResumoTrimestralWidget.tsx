@@ -36,7 +36,7 @@
  *      Usa allData sem filtro de data. Receita: subida = bom (verde);
  *      Despesa: subida = ruim (vermelho); subtotais tratados como receita.
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
@@ -368,6 +368,95 @@ function LinhaRow({ linha, anterior }: { linha: LinhaCalc; anterior?: LinhaCalc 
   )
 }
 
+// ── Tooltip de regra ─────────────────────────────────────────────────────────
+
+/**
+ * Ícone (i) com tooltip explicando a regra híbrida competência/caixa do widget.
+ *
+ * O widget tenta projetar o CAIXA dos próximos meses — por isso o mês de
+ * referência inclui Quitados (competência completa), mas M+1 e M+2 excluem
+ * Quitados, já que esses lançamentos já foram pagos e contam no mês do
+ * pagamento (não no mês de competência futuro).
+ */
+function InfoTooltip() {
+  const [open, setOpen] = useState(false)
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <span
+        tabIndex={0}
+        aria-label="Como o Resumo Trimestral é calculado"
+        style={{
+          display:        'inline-flex',
+          alignItems:     'center',
+          justifyContent: 'center',
+          width:          16,
+          height:         16,
+          borderRadius:   '50%',
+          border:         '1px solid var(--ink3)',
+          color:          'var(--ink3)',
+          fontSize:       10,
+          fontWeight:     700,
+          cursor:         'help',
+          lineHeight:     1,
+          userSelect:     'none',
+        }}
+      >
+        i
+      </span>
+      {open && (
+        <div
+          role="tooltip"
+          style={{
+            position:    'absolute',
+            top:         'calc(100% + 6px)',
+            left:        0,
+            zIndex:      50,
+            width:       360,
+            background:  'var(--surface)',
+            border:      '1px solid var(--line)',
+            borderRadius: 8,
+            padding:     12,
+            fontSize:    11,
+            lineHeight:  1.45,
+            color:       'var(--ink2)',
+            boxShadow:   '0 4px 12px rgba(0,0,0,0.08)',
+          }}
+        >
+          <div style={{ fontWeight: 700, color: 'var(--ink)', marginBottom: 6 }}>
+            Como ler este resumo
+          </div>
+          <p style={{ margin: '0 0 8px' }}>
+            O objetivo é <strong>prever o caixa</strong> dos próximos meses —
+            não reproduzir a DRE em competência.
+          </p>
+          <ul style={{ margin: '0 0 8px', paddingLeft: 16 }}>
+            <li style={{ marginBottom: 4 }}>
+              <strong>Mês de referência:</strong> competência completa
+              (inclui Recebidos/Pagos + em aberto).
+            </li>
+            <li style={{ marginBottom: 4 }}>
+              <strong>M+1 e M+2:</strong> apenas lançamentos em aberto
+              (Aberto, Atrasado, Parcial). Quitados são <em>excluídos</em>
+              porque já entraram no caixa do mês do pagamento.
+            </li>
+          </ul>
+          <p style={{ margin: 0, color: 'var(--ink3)' }}>
+            Por isso o total pode <strong>divergir da DRE</strong> em
+            competência: lá os quitados aparecem na competência futura;
+            aqui eles ficam no mês em que o dinheiro entrou.
+          </p>
+        </div>
+      )}
+    </span>
+  )
+}
+
 // ── Card de mês ──────────────────────────────────────────────────────────────
 
 function CardMes({
@@ -562,20 +651,23 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   return (
     <section>
       <div style={{ marginBottom: 8 }}>
-        <h3 style={{
-          fontSize: 13,
-          fontWeight: 700,
-          color: 'var(--ink)',
-          margin: 0,
-        }}>
-          Resumo Trimestral — Competência
-        </h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <h3 style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: 'var(--ink)',
+            margin: 0,
+          }}>
+            Resumo Trimestral — Projeção de Caixa
+          </h3>
+          <InfoTooltip />
+        </div>
         <p style={{
           fontSize: 11,
           color: 'var(--ink3)',
           margin: '2px 0 0',
         }}>
-          Mês de referência (filtro do dash) + 2 meses seguintes · M: competência completa · M+1/M+2: só em aberto (quitados já contam no mês de pagamento) · meta cruzada via módulo Metas
+          Mês de referência (filtro do dash) + 2 meses seguintes · meta cruzada via módulo Metas
         </p>
       </div>
 
