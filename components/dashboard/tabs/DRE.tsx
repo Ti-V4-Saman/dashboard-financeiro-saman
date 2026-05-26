@@ -339,14 +339,16 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
 
   // ── Executive KPIs (accumulated) ──────────────────────────────────────────
   const exec = useMemo(() => {
-    const recOp      = groupSum('__acc__', 1.99)
-    const recLiq     = groupSum('__acc__', 2.99)
-    const lubruto    = groupSum('__acc__', 3.99)
-    const despCom    = getL2('__acc__', '4 — Despesas', '4.1')
+    const recOp       = groupSum('__acc__', 1.99)
+    const recFin      = getL1('__acc__', '6.1 — Rec. Financeira')
+    const recBruta    = recOp + recFin
+    const recLiq      = groupSum('__acc__', 2.99)
+    const lubruto     = groupSum('__acc__', 3.99)
+    const despCom     = getL2('__acc__', '4 — Despesas', '4.1')
     const margContrib = lubruto + despCom
-    const ebitda     = groupSum('__acc__', 4.99)
-    const ebit       = groupSum('__acc__', 5.99)
-    const lucroLiq   = groupSum('__acc__', 99)
+    const ebitda      = groupSum('__acc__', 4.99)
+    const ebit        = groupSum('__acc__', 5.99)
+    const lucroLiq    = groupSum('__acc__', 99)
 
     // Growth Rate: compare last two visible months
     let growthRate: number | null = null
@@ -358,7 +360,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
       if (prvRL) growthRate = (curRL - prvRL) / Math.abs(prvRL)
     }
 
-    return { recOp, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, growthRate }
+    return { recOp, recFin, recBruta, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, growthRate }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months, vm, hier])
 
@@ -414,7 +416,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
     )
   }
 
-  const { recOp, recLiq, lubruto, margContrib, ebitda, lucroLiq, growthRate } = exec
+  const { recBruta, recFin, recOp, recLiq, lubruto, margContrib, ebitda, lucroLiq, growthRate } = exec
   const pctColor = (v: number) => v >= 0 ? '#1D9E75' : '#E24B4A'
 
   return (
@@ -422,6 +424,13 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
 
       {/* ── Executive KPI Cards ──────────────────────────────────────────── */}
       <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
+        <ExecCard
+          label="Receita Bruta"
+          value={fR(recBruta)}
+          sub={recFin > 0 ? `${fR(recFin)} financeira` : undefined}
+          color="var(--green)"
+          tip={'Receita total faturada antes das deduções.\n\nFórmula: Receita Operacional (grupo 1) + Receita Financeira (6.1)\n\nDiferença vs Receita Operacional: inclui rendimentos de aplicações, dividendos e outras receitas não operacionais.'}
+        />
         <ExecCard
           label="Receita Operacional"
           value={fR(recOp)}
@@ -463,23 +472,11 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
           tip={'Lucro Bruto − Todas as Despesas (grupos 4.1 + 4.2 + 4.3)\n\nAntes de depreciação/amortização, resultado financeiro e impostos sobre lucro. Proxy do caixa operacional.\n\nFórmula: Σ grupos 1 + 2 + 3 + 4'}
         />
         <ExecCard
-          label="EBITDA %"
-          value={fPct(ebitda, recLiq)}
-          color={pctColor(ebitda)}
-          tip={'EBITDA ÷ Receita Líquida × 100\n\nMede a rentabilidade operacional antes de itens não caixa e financeiros.'}
-        />
-        <ExecCard
           label="Lucro Líquido"
           value={fR(lucroLiq)}
           sub={fPct(lucroLiq, recLiq)}
           color={lucroLiq >= 0 ? 'var(--green)' : 'var(--red)'}
           tip={'EBT − Impostos sobre Lucro (CSLL + IRPJ, grupo 7)\n\nResultado final após todos os custos, despesas, depreciações, resultado financeiro e impostos.\n\nFórmula: Σ todos os grupos (1 a 7)'}
-        />
-        <ExecCard
-          label="Lucro Líquido %"
-          value={fPct(lucroLiq, recLiq)}
-          color={pctColor(lucroLiq)}
-          tip={'Lucro Líquido ÷ Receita Líquida × 100\n\nQuanto de cada R$ de receita líquida vira lucro real.'}
         />
         <ExecCard
           label="Growth Rate"
