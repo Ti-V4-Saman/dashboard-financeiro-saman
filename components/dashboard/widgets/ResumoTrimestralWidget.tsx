@@ -42,7 +42,6 @@ import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
 
 interface Props {
-  allData: Lancamento[]
   filters: Filters
 }
 
@@ -73,6 +72,18 @@ function prevMonth(ym: string): string {
   const py = m === 1 ? y - 1 : y
   const pm = m === 1 ? 12    : m - 1
   return `${py}-${String(pm).padStart(2, '0')}`
+}
+
+/** Primeiro dia do mês YYYY-MM-DD. */
+function firstDayOf(ym: string): string {
+  return `${ym}-01`
+}
+
+/** Último dia do mês YYYY-MM-DD. */
+function lastDayOf(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m, 0).getDate() // dia 0 do mês seguinte = último do atual
+  return `${ym}-${String(d).padStart(2, '0')}`
 }
 
 /** Formatação BRL sem centavos, com abreviação automática acima de R$ 1M.
@@ -119,10 +130,26 @@ const L1_DESP_FIN = '6.2 — Desp. Financeira'
 const L1_DEPREC   = '5 — Depreciações'
 const L1_IMP_LUC  = '7 — Impostos s/ Lucro'
 
-/** Calcula linhas da DRE para um mês específico. */
-function calcMes(ym: string, data: Lancamento[], metas: Meta[]): MesCalc {
+/** Calcula linhas da DRE para um mês específico.
+ *
+ *  `excludeBaixados=true` filtra lançamentos com situacao === 'Quitado'.
+ *  Usado para meses FUTUROS (M+1, M+2): em projeção, lançamentos já baixados
+ *  pertencem ao mês em que foram pagos (caixa), não ao mês de competência
+ *  futuro — evita double-counting com a visão de caixa realizado.
+ *  Mês de referência (M) mantém competência completa (inclui Quitado).
+ */
+function calcMes(
+  ym: string,
+  data: Lancamento[],
+  metas: Meta[],
+  excludeBaixados: boolean = false,
+): MesCalc {
   if (!ym) return { ym: '', hasData: false, linhas: [] }
-  const rows = data.filter(r => r.data_ym === ym)
+  const rows = data.filter(r => {
+    if (r.data_ym !== ym) return false
+    if (excludeBaixados && r.situacao === 'Quitado') return false
+    return true
+  })
   const metasMes = metas.filter(m => m.mes_referencia === ym)
 
   /** Soma assinada (receita + / despesa −) das categorias do(s) L1. */
@@ -270,9 +297,15 @@ function LinhaRow({ linha, anterior }: { linha: LinhaCalc; anterior?: LinhaCalc 
   const isResultado = linha.kind === 'resultado'
   const fontWeight  = isSubtotal || isResultado ? 700 : 500
   const labelColor  = isResultado ? 'var(--ink)' : isSubtotal ? 'var(--ink)' : 'var(--ink2)'
-  const totalColor  = isResultado
-    ? (linha.total >= 0 ? 'var(--green)' : 'var(--red)')
-    : 'var(--ink)'
+  // Cor do TOTAL:
+  //   • receita    → verde
+  //   • despesa    → vermelho
+  //   • subtotal   → verde se >= 0, vermelho se < 0
+  //   • resultado  → verde se >= 0, vermelho se < 0
+  const totalColor =
+    linha.kind === 'receita'  ? 'var(--green)' :
+    linha.kind === 'despesa'  ? 'var(--red)'   :
+    /* subtotal/resultado */    (linha.total >= 0 ? 'var(--green)' : 'var(--red)')
 
   // Ratio para badge de % meta
   const hasMeta = Math.abs(linha.meta) > 0.01
@@ -449,18 +482,53 @@ function CardSkeleton() {
 
 // ── Componente principal ─────────────────────────────────────────────────────
 
-export default function ResumoTrimestralWidget({ allData, filters }: Props) {
+export default function ResumoTrimestralWidget({ filters }: Props) {
   const { data: metas = [], isLoading: metasLoading } = useSWR<Meta[]>(
     '/api/metas',
     fetcher,
     { refreshInterval: 5 * 60 * 1000 },
   )
 
+  // Mês de referência = dateTo.slice(0,7). Quando o filtro for "todo-periodo"
+  // (dateTo vazio), assume o mês atual.
+  const mesRef = useMemo(() => {
+    if (filters.dateTo && filters.dateTo.length >= 7) {
+      return filters.dateTo.slice(0, 7)
+    }
+    const h = new Date()
+    return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}`
+  }, [filters.dateTo])
+
+  const mesM1  = useMemo(() => nextMonth(mesRef), [mesRef])
+  const mesM2  = useMemo(() => nextMonth(mesM1),  [mesM1])
+  const mesAnt = useMemo(() => prevMonth(mesRef), [mesRef])
+
+  // Range próprio (M-1 .. M+2) em regime de competência — independente do
+  // filtro de data do dash, que não cobre M+1/M+2.
+  const rangeDe  = useMemo(() => firstDayOf(mesAnt), [mesAnt])
+  const rangeAte = useMemo(() => lastDayOf(mesM2),   [mesM2])
+
+  const apiUrl = useMemo(
+    () => `/api/financeiro?de=${rangeDe}&ate=${rangeAte}&regime=competencia`,
+    [rangeDe, rangeAte],
+  )
+
+  const { data: apiResp, isLoading: dataLoading } = useSWR<{ lancamentos: Lancamento[] }>(
+    apiUrl,
+    fetcher,
+    { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
+  )
+
+  const apiData = useMemo<Lancamento[]>(
+    () => apiResp?.lancamentos ?? [],
+    [apiResp],
+  )
+
   // Aplica filtros NÃO-temporais (mantém o card alinhado com filtros do dash
   // exceto data). Filtros: categoria, cc, tipo, situacao, conta + regras de
   // ouro: !isTransfer, !Cancelado, !Renegociado.
   const dataFiltradaNaoTemporal = useMemo(() => {
-    return allData.filter(r => {
+    return apiData.filter(r => {
       if (r.isTransfer) return false
       if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
 
@@ -477,28 +545,19 @@ export default function ResumoTrimestralWidget({ allData, filters }: Props) {
       if (filters.conta.length    > 0 && !filters.conta.includes(r.conta))       return false
       return true
     })
-  }, [allData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
+  }, [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
 
-  // Mês de referência = dateTo.slice(0,7). Quando o filtro for "todo-periodo"
-  // (dateTo vazio), assume o mês atual.
-  const mesRef = useMemo(() => {
-    if (filters.dateTo && filters.dateTo.length >= 7) {
-      return filters.dateTo.slice(0, 7)
-    }
-    const h = new Date()
-    return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}`
-  }, [filters.dateTo])
+  // Mês de referência: competência completa (inclui Quitado).
+  // Próximos meses (M+1, M+2): competência menos baixados — quitados já
+  // pertencem ao mês do pagamento (caixa), não ao mês de competência futuro.
+  // Mês anterior (para Δ): competência completa, para comparação consistente
+  // com o mês de referência.
+  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas, false), [mesRef,  dataFiltradaNaoTemporal, metas])
+  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas, true),  [mesM1,   dataFiltradaNaoTemporal, metas])
+  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas, true),  [mesM2,   dataFiltradaNaoTemporal, metas])
+  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas, false), [mesAnt,  dataFiltradaNaoTemporal, metas])
 
-  const mesM1     = useMemo(() => nextMonth(mesRef), [mesRef])
-  const mesM2     = useMemo(() => nextMonth(mesM1),  [mesM1])
-  const mesAnt    = useMemo(() => prevMonth(mesRef), [mesRef])
-
-  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas), [mesRef,  dataFiltradaNaoTemporal, metas])
-  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas), [mesM1,   dataFiltradaNaoTemporal, metas])
-  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas), [mesM2,   dataFiltradaNaoTemporal, metas])
-  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas), [mesAnt,  dataFiltradaNaoTemporal, metas])
-
-  const loading = metasLoading && metas.length === 0
+  const loading = (metasLoading && metas.length === 0) || (dataLoading && !apiResp)
 
   return (
     <section>
@@ -516,7 +575,7 @@ export default function ResumoTrimestralWidget({ allData, filters }: Props) {
           color: 'var(--ink3)',
           margin: '2px 0 0',
         }}>
-          Mês de referência (filtro do dash) + 2 meses seguintes · valores incluem realizado + em aberto · meta cruzada via módulo Metas
+          Mês de referência (filtro do dash) + 2 meses seguintes · M: competência completa · M+1/M+2: só em aberto (quitados já contam no mês de pagamento) · meta cruzada via módulo Metas
         </p>
       </div>
 
