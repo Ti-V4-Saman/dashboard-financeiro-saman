@@ -19,7 +19,6 @@ import ResumoTrimestralWidget from '@/components/dashboard/widgets/ResumoTrimest
 
 interface Props {
   data: Lancamento[]
-  allData: Lancamento[]
   filters?: Filters
 }
 
@@ -78,7 +77,7 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
   )
 }
 
-export function VisaoGeral({ data, allData, filters }: Props) {
+export function VisaoGeral({ data, filters }: Props) {
   // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
   // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
   // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
@@ -287,7 +286,7 @@ export function VisaoGeral({ data, allData, filters }: Props) {
 
       {/* Linha 2: Resumo Trimestral — Competência (3 cards: M, M+1, M+2) */}
       {filters && (
-        <ResumoTrimestralWidget allData={allData} filters={filters} />
+        <ResumoTrimestralWidget filters={filters} />
       )}
 
       {/* Linha 3: blocos de resumo (Contratos + Notas Fiscais) */}
