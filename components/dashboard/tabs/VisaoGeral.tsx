@@ -211,11 +211,20 @@ export function VisaoGeral({ data, filters }: Props) {
         />
       </div>
 
-      {/* Linha 1: Gráfico de barras + Insights (esq) | Saldos Bancários (dir) */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) 400px', alignItems: 'start' }}>
-
-        {/* Card esquerdo: Receitas vs Despesas + InsightsPeriodo */}
-        <Card>
+      {/* Linha 1+2 combinadas em grid 2-col:
+            Esquerda (1fr): Chart+Insights (row 1) + Contratos|NFs (row 2)
+            Direita (420px): Saldos Bancários ocupando AS DUAS linhas
+                             (sidebar alta, alinhada com o bottom da coluna esq) */}
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: 'minmax(0, 1fr) 420px',
+          gridTemplateRows: 'auto auto',
+          alignItems: 'stretch',
+        }}
+      >
+        {/* Coluna esquerda — Row 1: Receitas vs Despesas + InsightsPeriodo */}
+        <Card style={{ gridColumn: 1, gridRow: 1 }}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -236,7 +245,7 @@ export function VisaoGeral({ data, filters }: Props) {
             </div>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={260}>
               <BarChart data={dailyData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <XAxis
                   dataKey="data"
@@ -277,20 +286,24 @@ export function VisaoGeral({ data, filters }: Props) {
           </CardContent>
         </Card>
 
-        {/* Card direito: Saldos Bancários */}
-        <SaldosBancarios
-          data={extras?.saldos ?? null}
-          loading={extrasLoading}
-        />
+        {/* Coluna esquerda — Row 2: blocos de resumo (Contratos + Notas Fiscais) */}
+        <div style={{ gridColumn: 1, gridRow: 2 }}>
+          <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
+        </div>
+
+        {/* Coluna direita — span 2 rows: Saldos Bancários (sidebar) */}
+        <div style={{ gridColumn: 2, gridRow: '1 / span 2' }}>
+          <SaldosBancarios
+            data={extras?.saldos ?? null}
+            loading={extrasLoading}
+          />
+        </div>
       </div>
 
-      {/* Linha 2: Resumo Trimestral — Competência (3 cards: M, M+1, M+2) */}
+      {/* Linha 3: Resumo Trimestral — Projeção de Caixa (3 cards: M, M+1, M+2) */}
       {filters && (
         <ResumoTrimestralWidget filters={filters} />
       )}
-
-      {/* Linha 3: blocos de resumo (Contratos + Notas Fiscais) */}
-      <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
 
       {/* Linha 3: Top 10 */}
       <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
