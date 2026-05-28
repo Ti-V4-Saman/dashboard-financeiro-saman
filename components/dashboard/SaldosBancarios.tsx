@@ -85,13 +85,16 @@ function Skeleton({ h = 14, w = '100%' }: { h?: number; w?: string }) {
 
 export function SaldosBancarios({ data, loading }: Props) {
   return (
-    <Card>
+    // h-full + flex-col fazem o card preencher a celula do grid quando
+    // renderizado em sidebar (gridRow: '1 / span 2' na VisaoGeral).
+    <Card className="h-full flex flex-col">
       <CardHeader className="pb-2">
         <CardTitle>Saldos bancários</CardTitle>
         <CardDescription>Por conta financeira</CardDescription>
       </CardHeader>
 
-      <CardContent className="gap-0 pt-0">
+      {/* flex-1 faz o conteudo expandir; consolidado vai pro bottom com mt-auto */}
+      <CardContent className="gap-0 pt-0 flex-1 flex flex-col">
         {/* Lista de contas */}
         <div>
           {loading || !data ? (
@@ -175,9 +178,10 @@ export function SaldosBancarios({ data, loading }: Props) {
           )}
         </div>
 
-        {/* Consolidado */}
+        {/* Consolidado — mt-auto empurra para o bottom quando o card preenche
+            uma sidebar mais alta que o conteudo natural da lista. */}
         <div
-          className="flex items-center justify-between pt-2 mt-1"
+          className="flex items-center justify-between pt-2 mt-auto"
           style={{ borderTop: '0.5px solid var(--line)' }}
         >
           <span className="text-[12px] font-medium" style={{ color: 'var(--ink3)' }}>
