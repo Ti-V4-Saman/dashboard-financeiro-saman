@@ -1,6 +1,10 @@
 'use client'
 
+import { useState } from 'react'
 import { fR } from '@/lib/utils'
+import { ContratosDrillSheet } from '@/components/dashboard/ContratosDrillSheet'
+
+type DrillFiltro = 'vencidos' | 'a-vencer-60d'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -144,6 +148,7 @@ function Row({
   sub,
   color,
   last = false,
+  onClick,
 }: {
   label: string
   value: string
@@ -151,15 +156,29 @@ function Row({
   sub?: string   // shown below value when pct is NOT provided
   color?: string
   last?: boolean
+  /** Quando definido, transforma a linha em botao (cursor pointer, hover, foco). */
+  onClick?: () => void
 }) {
+  const clickable = typeof onClick === 'function'
   return (
     <div
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={clickable
+        ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick!() } }
+        : undefined}
+      className={clickable ? 'cursor-pointer transition-colors hover:bg-[var(--surf2)]' : undefined}
+      title={clickable ? 'Clique para ver lista' : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        padding: '5px 0',
+        padding: clickable ? '5px 8px' : '5px 0',
+        margin: clickable ? '0 -8px' : 0,
+        borderRadius: clickable ? 4 : 0,
         borderBottom: last ? 'none' : '0.5px solid var(--line)',
+        outline: 'none',
       }}
     >
       {/* label */}
@@ -229,7 +248,13 @@ function Skeleton({ rows = 6 }: { rows?: number }) {
 
 // ── Card: Contratos ───────────────────────────────────────────────────────────
 
-function CardContratos({ data }: { data: ContratosData | null }) {
+function CardContratos({
+  data,
+  onDrill,
+}: {
+  data: ContratosData | null
+  onDrill: (f: DrillFiltro) => void
+}) {
   return (
     <CardShell>
       <CardHeader tag="Recorrência" title="Contratos" />
@@ -256,12 +281,14 @@ function CardContratos({ data }: { data: ContratosData | null }) {
             value={data.aVencer60.toLocaleString('pt-BR')}
             color={data.aVencer60 > 0 ? C.amber : C.default}
             sub={data.aVencer60 > 0 ? 'contratos' : undefined}
+            onClick={data.aVencer60 > 0 ? () => onDrill('a-vencer-60d') : undefined}
           />
           <Row
             label="Vencidos (ativos)"
             value={data.vencidosAtivos.toLocaleString('pt-BR')}
             color={data.vencidosAtivos > 0 ? C.red : C.default}
             sub={data.vencidosAtivos > 0 ? 'data fim passada' : undefined}
+            onClick={data.vencidosAtivos > 0 ? () => onDrill('vencidos') : undefined}
           />
           <Row
             label="Inativos"
@@ -340,18 +367,31 @@ interface Props {
 }
 
 export function BlocosResumo({ blocos, loading }: Props) {
+  const [drillFiltro, setDrillFiltro] = useState<DrillFiltro | null>(null)
+
   return (
-    <div
-      style={{
-        display: 'grid',
-        // 2 colunas: Contratos + Notas Fiscais (CardIndicadores removido —
-        // substituido pelo widget ResumoTrimestralWidget no commit posterior).
-        gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)',
-        gap: 12,
-      }}
-    >
-      <CardContratos data={loading ? null : (blocos?.contratos ?? null)} />
-      <CardNotas     data={loading ? null : (blocos?.notas     ?? null)} />
-    </div>
+    <>
+      <div
+        style={{
+          display: 'grid',
+          // 2 colunas: Contratos + Notas Fiscais (CardIndicadores removido —
+          // substituido pelo widget ResumoTrimestralWidget no commit posterior).
+          gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)',
+          gap: 12,
+        }}
+      >
+        <CardContratos
+          data={loading ? null : (blocos?.contratos ?? null)}
+          onDrill={(f) => setDrillFiltro(f)}
+        />
+        <CardNotas data={loading ? null : (blocos?.notas ?? null)} />
+      </div>
+
+      <ContratosDrillSheet
+        open={drillFiltro !== null}
+        onClose={() => setDrillFiltro(null)}
+        filtro={drillFiltro}
+      />
+    </>
   )
 }
