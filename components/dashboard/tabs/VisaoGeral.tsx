@@ -218,7 +218,7 @@ export function VisaoGeral({ data, filters }: Props) {
       <div
         className="grid gap-3"
         style={{
-          gridTemplateColumns: 'minmax(0, 1fr) 420px',
+          gridTemplateColumns: 'minmax(0, 1fr) 460px',
           gridTemplateRows: 'auto auto',
           alignItems: 'stretch',
         }}
