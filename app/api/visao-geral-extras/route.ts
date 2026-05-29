@@ -8,7 +8,7 @@
  * Cacheado 60s pelo Next.js (revalidate).
  */
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,10 +36,7 @@ interface NotasData {
   pagoSemNotaValor:  number
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

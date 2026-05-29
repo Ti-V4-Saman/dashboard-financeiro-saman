@@ -1,6 +1,6 @@
 import NextAuth from 'next-auth'
 import authConfig from './auth.config'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
 
 // ── Configuração de Acesso ───────────────────────────────────────────────────
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase()
@@ -22,16 +22,10 @@ async function isAllowed(email: string | null | undefined): Promise<boolean> {
   if (MASTER_ADMINS.includes(e)) return true
 
   try {
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false }
-    })
-
-    const res = await pool.query(
+    const res = await getPool().query(
       'SELECT ativo FROM ca.usuarios_dashboard WHERE LOWER(email) = $1',
       [e]
     )
-    await pool.end()
 
     // Só permite acesso se estiver no banco e ativo
     if (res.rows.length > 0 && res.rows[0].ativo) return true

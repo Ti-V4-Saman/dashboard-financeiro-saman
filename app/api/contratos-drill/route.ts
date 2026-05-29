@@ -19,14 +19,11 @@
  *   - data_fim conforme termos.data_fim da API v1
  */
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 type Filtro = 'vencidos' | 'a-vencer-60d'
 

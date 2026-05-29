@@ -135,9 +135,11 @@ const FORM_GROUPS = (() => {
 interface MetasTabProps {
   allData: Lancamento[]
   filters: Filters
+  /** Só admins podem gerenciar (criar/editar/excluir) metas — a API impõe 403. */
+  isAdmin?: boolean
 }
 
-export function MetasTab({ allData, filters }: MetasTabProps) {
+export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
   const { data: metas = [], isLoading, mutate } = useSWR<Meta[]>('/api/metas', fetcher, {
     refreshInterval: 5 * 60 * 1000,
   })
@@ -987,16 +989,18 @@ export function MetasTab({ allData, filters }: MetasTabProps) {
               : 'Adicione ou edite metas — a categoria é selecionada da lista completa do plano de contas'}
           </p>
         </div>
-        <button
-          onClick={() => { setView(view === 'dash' ? 'manage' : 'dash'); if (view === 'manage') setEditing(null); }}
-          style={{ background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 6, padding: '6px 14px', fontSize: 11, fontWeight: 600, color: 'var(--ink2)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
-        >
-          {view === 'dash' ? '⚙ Gerenciar Metas' : '📊 Voltar ao Dashboard'}
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => { setView(view === 'dash' ? 'manage' : 'dash'); if (view === 'manage') setEditing(null); }}
+            style={{ background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 6, padding: '6px 14px', fontSize: 11, fontWeight: 600, color: 'var(--ink2)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            {view === 'dash' ? '⚙ Gerenciar Metas' : '📊 Voltar ao Dashboard'}
+          </button>
+        )}
       </div>
       {isLoading && metas.length === 0
         ? <div style={{ color: 'var(--ink3)', fontSize: 12, padding: '32px 0', textAlign: 'center' }}>Carregando metas...</div>
-        : (view === 'dash' ? renderDashboard() : renderManage())}
+        : (view === 'manage' && isAdmin ? renderManage() : renderDashboard())}
 
       {/* ── Modais ──────────────────────────────────────────────────────── */}
       {showReplicateFor && (
