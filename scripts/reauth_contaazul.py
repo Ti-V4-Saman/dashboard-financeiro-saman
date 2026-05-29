@@ -38,9 +38,16 @@ REDIRECT_URI = "https://oauth.pstmn.io/v1/callback"
 SCOPE        = "openid profile aws.cognito.signin.user.admin"
 ENV_FILE     = os.path.join(os.path.dirname(__file__), "..", ".env")
 
-# Credenciais do app de produção "ETL BI Interno"
-CLIENT_ID     = "4r48m15r1o0rdttnu8pq91n13j"
-CLIENT_SECRET = "187mbq3lf77nffohb0acj02rli84npoivekos5dsbm06pn9v1ddu"
+# Credenciais do app de produção "ETL BI Interno".
+# NUNCA hardcode aqui — leia de variáveis de ambiente / .env.
+# (O secret que estava nesta linha foi exposto no histórico do git e DEVE
+#  ser rotacionado no painel da Conta Azul.)
+CLIENT_ID     = os.getenv("CA_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("CA_CLIENT_SECRET", "")
+
+if not CLIENT_ID or not CLIENT_SECRET:
+    print("Defina CA_CLIENT_ID e CA_CLIENT_SECRET no ambiente (ou no .env) antes de rodar.")
+    sys.exit(1)
 
 
 def _save_to_env(client_id: str, client_secret: str, refresh_token: str) -> None:

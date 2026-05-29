@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { requireAdmin } from '@/lib/auth-guard'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-})
+const pool = getPool()
 
 // GET: Listar todas as metas
 export async function GET() {
@@ -19,6 +17,8 @@ export async function GET() {
 
 // POST: Criar ou atualizar uma meta (Upsert)
 export async function POST(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const body = await req.json()
     const { 
@@ -63,6 +63,8 @@ export async function POST(req: Request) {
 
 // DELETE: Excluir uma meta
 export async function DELETE(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const { searchParams } = new URL(req.url)
     const id = searchParams.get('id')

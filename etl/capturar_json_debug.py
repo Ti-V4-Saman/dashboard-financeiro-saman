@@ -82,9 +82,8 @@ def _get_access_token_readonly() -> str:
         timeout=20,
     )
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"Falha na autenticação (HTTP {resp.status_code}): {resp.text[:300]}"
-        )
+        # Sem resp.text: o corpo de erro do OAuth pode ecoar segredos.
+        raise RuntimeError(f"Falha na autenticação (HTTP {resp.status_code})")
 
     data = resp.json()
     access_token = data.get("access_token")

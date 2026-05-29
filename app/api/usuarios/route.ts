@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { isAdmin } from '@/lib/auth-guard'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-})
+const pool = getPool()
 
 export interface Usuario {
   id: number
@@ -13,11 +10,6 @@ export interface Usuario {
   email: string
   ativo: boolean
   criado_em: string
-}
-
-async function isAdmin(): Promise<boolean> {
-  const session = await auth()
-  return (session?.user as { isAdmin?: boolean })?.isAdmin === true
 }
 
 // ── GET — lista todos os usuários ────────────────────────────────────────────
@@ -32,7 +24,7 @@ export async function GET() {
     return NextResponse.json(rows)
   } catch (err) {
     console.error('[GET /api/usuarios]', err)
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -52,7 +44,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[POST /api/usuarios]', err)
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -70,7 +62,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[PATCH /api/usuarios]', err)
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -85,6 +77,6 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[DELETE /api/usuarios]', err)
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

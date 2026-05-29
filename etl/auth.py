@@ -64,7 +64,9 @@ def get_access_token() -> str:
         raise RuntimeError(f"Erro de conexão ao autenticar: {exc}")
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Falha na autenticação ContaAzul (HTTP {resp.status_code}): {resp.text[:300]}")
+        # Não logamos resp.text: o corpo de erro do endpoint OAuth pode ecoar
+        # parâmetros sensíveis (client_secret/refresh_token). Só o status code.
+        raise RuntimeError(f"Falha na autenticação ContaAzul (HTTP {resp.status_code})")
 
     data = resp.json()
     access_token = data.get("access_token")

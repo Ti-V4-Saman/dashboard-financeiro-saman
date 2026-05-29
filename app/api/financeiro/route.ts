@@ -1,13 +1,10 @@
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
 import type { Lancamento } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 const TRANSFER_ORIGENS = new Set(['TRANSFERENCIA', 'SALDO_CONTA_BANCARIA'])
 

@@ -11,12 +11,10 @@
  * Operação é tudo-ou-nada por linha — falhas individuais voltam em `errors`.
  */
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { requireAdmin } from '@/lib/auth-guard'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 interface MetaInput {
   id?: string
@@ -33,6 +31,8 @@ interface MetaInput {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const body = await req.json()
     const metas: MetaInput[] = Array.isArray(body?.metas) ? body.metas : []
@@ -116,7 +116,7 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error('Error in /api/metas/bulk:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 },
     )
   }
@@ -127,6 +127,8 @@ export async function POST(req: Request) {
  * Exclusão em massa.
  */
 export async function DELETE(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const { searchParams } = new URL(req.url)
     const idsParam = searchParams.get('ids') || ''
@@ -147,7 +149,7 @@ export async function DELETE(req: Request) {
   } catch (err) {
     console.error('Error in /api/metas/bulk DELETE:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 },
     )
   }

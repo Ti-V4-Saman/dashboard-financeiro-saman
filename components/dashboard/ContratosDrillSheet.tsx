@@ -34,7 +34,13 @@ interface Props {
   filtro:   Filtro | null
 }
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+const fetcher = async (url: string) => {
+  const r = await fetch(url)
+  // Sem isso, um 500 (que devolve {error}) viraria `data` em vez de acionar
+  // o estado de erro — e `data.contratos.length` quebraria o componente.
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return r.json()
+}
 
 const TITULO: Record<Filtro, string> = {
   'vencidos':     'Contratos vencidos (ativos)',
