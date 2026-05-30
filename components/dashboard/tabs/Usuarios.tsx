@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import useSWR from 'swr'
-import { UserPlus, ToggleLeft, ToggleRight, Trash2, Shield, Users, UserCheck, UserX } from 'lucide-react'
+import { UserPlus, ToggleLeft, ToggleRight, Trash2, Shield, Users, UserCheck, UserX, SlidersHorizontal } from 'lucide-react'
 import type { Usuario } from '@/app/api/usuarios/route'
+import { ASSIGNABLE_SCREENS, SCREEN_LABELS } from '@/lib/screens'
 
 const fetcher = async (url: string) => {
   const r = await fetch(url)
@@ -35,6 +36,41 @@ export function UsuariosTab() {
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+
+  // Editor de permissões por usuário (linha expansível)
+  const [permsFor, setPermsFor] = useState<number | null>(null)
+  const [draft, setDraft] = useState<{ is_admin: boolean; telas: string[] }>({ is_admin: false, telas: [] })
+  const [savingPerms, setSavingPerms] = useState(false)
+
+  const openPerms = (u: Usuario) => {
+    if (permsFor === u.id) { setPermsFor(null); return }
+    setPermsFor(u.id)
+    setDraft({ is_admin: !!u.is_admin, telas: u.telas_permitidas ?? [] })
+  }
+
+  const toggleTela = (slug: string) => {
+    setDraft(d => ({
+      ...d,
+      telas: d.telas.includes(slug) ? d.telas.filter(s => s !== slug) : [...d.telas, slug],
+    }))
+  }
+
+  const handleSavePerms = async (u: Usuario) => {
+    setSavingPerms(true)
+    const res = await fetch('/api/usuarios', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: u.id, is_admin: draft.is_admin, telas_permitidas: draft.telas }),
+    })
+    setSavingPerms(false)
+    if (res.ok) {
+      setPermsFor(null)
+      mutate()
+      flash('ok', 'Permissões atualizadas.')
+    } else {
+      flash('err', 'Erro ao salvar permissões.')
+    }
+  }
 
   const flash = (type: 'ok' | 'err', text: string) => {
     setMsg({ type, text })
@@ -242,8 +278,18 @@ export function UsuariosTab() {
                 </tr>
               )}
               {lista.map(u => (
-                <tr key={u.id} style={{ background: u.ativo ? 'var(--surface)' : '#fef2f2', borderBottom: '1px solid var(--line)' }}>
-                  <td style={{ padding: '10px 16px', color: 'var(--ink)', fontWeight: 500 }}>{u.nome || '—'}</td>
+                <Fragment key={u.id}>
+                <tr style={{ background: u.ativo ? 'var(--surface)' : '#fef2f2', borderBottom: permsFor === u.id ? 'none' : '1px solid var(--line)' }}>
+                  <td style={{ padding: '10px 16px', color: 'var(--ink)', fontWeight: 500 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {u.nome || '—'}
+                      {u.is_admin && (
+                        <span title="Administrador" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 20, fontSize: 9, fontWeight: 700, background: '#eef2ff', color: 'var(--brand)' }}>
+                          <Shield size={10} /> Admin
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td style={{ padding: '10px 16px', color: 'var(--ink2)', borderLeft: '1px solid var(--line)' }}>{u.email}</td>
                   <td style={{ padding: '10px 16px', color: 'var(--ink3)', borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }}>
                     {u.criado_em ? new Date(u.criado_em).toLocaleDateString('pt-BR') : '—'}
@@ -261,6 +307,13 @@ export function UsuariosTab() {
                   <td style={{ padding: '10px 12px', textAlign: 'center', borderLeft: '1px solid var(--line)' }}>
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
                       <button
+                        onClick={() => openPerms(u)}
+                        title="Permissões de tela"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 5, color: permsFor === u.id ? 'var(--brand)' : 'var(--ink3)' }}
+                      >
+                        <SlidersHorizontal size={16} />
+                      </button>
+                      <button
                         onClick={() => handleToggle(u)}
                         title={u.ativo ? 'Bloquear acesso' : 'Liberar acesso'}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 5, color: u.ativo ? 'var(--green)' : 'var(--ink3)' }}
@@ -277,6 +330,65 @@ export function UsuariosTab() {
                     </div>
                   </td>
                 </tr>
+
+                {permsFor === u.id && (
+                  <tr style={{ background: 'var(--surf2)', borderBottom: '1px solid var(--line)' }}>
+                    <td colSpan={5} style={{ padding: '14px 16px' }}>
+                      {/* Toggle admin */}
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={draft.is_admin}
+                          onChange={e => setDraft(d => ({ ...d, is_admin: e.target.checked }))}
+                        />
+                        <Shield size={14} style={{ color: 'var(--brand)' }} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                          Administrador <span style={{ fontWeight: 400, color: 'var(--ink3)' }}>(gerencia usuários + enxerga todas as telas)</span>
+                        </span>
+                      </label>
+
+                      {/* Checkboxes de telas (desabilitados quando admin) */}
+                      <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--ink3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+                        Telas permitidas
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 8, opacity: draft.is_admin ? 0.45 : 1, pointerEvents: draft.is_admin ? 'none' : 'auto' }}>
+                        {ASSIGNABLE_SCREENS.map(slug => (
+                          <label key={slug} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--ink2)', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={draft.is_admin || draft.telas.includes(slug)}
+                              onChange={() => toggleTela(slug)}
+                            />
+                            {SCREEN_LABELS[slug]}
+                          </label>
+                        ))}
+                      </div>
+                      {draft.is_admin && (
+                        <div style={{ fontSize: 11, color: 'var(--ink3)', marginTop: 8 }}>
+                          Administrador enxerga todas as telas — a seleção acima é ignorada.
+                        </div>
+                      )}
+
+                      {/* Ações */}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                        <button
+                          onClick={() => handleSavePerms(u)}
+                          disabled={savingPerms}
+                          style={{ background: 'var(--brand)', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 16px', fontSize: 12, fontWeight: 600, cursor: savingPerms ? 'not-allowed' : 'pointer', opacity: savingPerms ? 0.7 : 1 }}
+                        >
+                          {savingPerms ? 'Salvando...' : 'Salvar permissões'}
+                        </button>
+                        <button
+                          onClick={() => setPermsFor(null)}
+                          style={{ background: 'var(--surface)', color: 'var(--ink2)', border: '1px solid var(--line2)', borderRadius: 7, padding: '7px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -286,7 +398,7 @@ export function UsuariosTab() {
       {/* Nota de rodapé */}
       <p style={{ fontSize: 10, color: 'var(--ink3)', textAlign: 'center', paddingBottom: 8 }}>
         Dados armazenados com segurança no banco de dados <strong>PostgreSQL (Neon)</strong>.
-        Alterações refletem imediatamente no próximo login.
+        Permissões são lidas do banco a cada request (revogação na hora); a sessão expira em até 72h.
       </p>
     </div>
   )
