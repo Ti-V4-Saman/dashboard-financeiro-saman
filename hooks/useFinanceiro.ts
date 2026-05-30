@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import type { Lancamento, Filters, Regime, TipoPeriodo, Atalho } from '@/lib/types'
 import { parseDataLocal } from '@/lib/utils'
+import { applyFiltros } from '@/lib/financeiro-filtros'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -211,22 +212,17 @@ export function useFinanceiro() {
 
   const listaContas = useMemo(() => raw?.contas || [], [raw])
 
-  // Client-side filtering (cat, cc, tipo, situacao, conta — NOT date/regime, handled server-side)
+  // Client-side filtering (cat, cc, tipo, situacao, conta — NOT date/regime, handled server-side).
+  // Usa applyFiltros (lib/financeiro-filtros) — a MESMA função usada server-side
+  // nos endpoints agregados, garantindo paridade de números.
   const filteredData = useMemo(() => {
-    return allData.filter(r => {
-      if (!r.data) return false
-      if (filters.categoria.length > 0) {
-        const allCats = r.categorias.map(c => c.nome)
-        if (!filters.categoria.some(cat => allCats.includes(cat))) return false
-      }
-      if (filters.cc.length > 0) {
-        const allCCs = r._ccList.map(c => c.nome)
-        if (!filters.cc.some(cc => allCCs.includes(cc))) return false
-      }
-      if (filters.tipo     && r.tipo     !== filters.tipo)     return false
-      if (filters.situacao.length > 0 && !filters.situacao.includes(r.situacao)) return false
-      if (filters.conta.length    > 0 && !filters.conta.includes(r.conta))       return false
-      return true
+    const comData = allData.filter(r => r.data) // mantém o descarte de linhas sem data
+    return applyFiltros(comData, {
+      categoria: filters.categoria,
+      cc:        filters.cc,
+      tipo:      filters.tipo,
+      situacao:  filters.situacao,
+      conta:     filters.conta,
     })
   }, [allData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
 

@@ -40,6 +40,7 @@ import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
+import { applyFiltros } from '@/lib/financeiro-filtros'
 
 interface Props {
   filters: Filters
@@ -617,22 +618,17 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   // exceto data). Filtros: categoria, cc, tipo, situacao, conta + regras de
   // ouro: !isTransfer, !Cancelado, !Renegociado.
   const dataFiltradaNaoTemporal = useMemo(() => {
-    return apiData.filter(r => {
-      if (r.isTransfer) return false
-      if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
-
-      if (filters.categoria.length > 0) {
-        const cats = r.categorias.map(c => c.nome)
-        if (!filters.categoria.some(c => cats.includes(c))) return false
-      }
-      if (filters.cc.length > 0) {
-        const ccs = r._ccList.map(c => c.nome)
-        if (!filters.cc.some(c => ccs.includes(c))) return false
-      }
-      if (filters.tipo            && r.tipo     !== filters.tipo)     return false
-      if (filters.situacao.length > 0 && !filters.situacao.includes(r.situacao)) return false
-      if (filters.conta.length    > 0 && !filters.conta.includes(r.conta))       return false
-      return true
+    // Regras de ouro do card + os 5 filtros não-temporais via applyFiltros
+    // (mesma função usada server-side, garante paridade).
+    const base = apiData.filter(
+      r => !r.isTransfer && r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado',
+    )
+    return applyFiltros(base, {
+      categoria: filters.categoria,
+      cc:        filters.cc,
+      tipo:      filters.tipo,
+      situacao:  filters.situacao,
+      conta:     filters.conta,
     })
   }, [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
 
