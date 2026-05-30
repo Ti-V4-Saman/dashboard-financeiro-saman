@@ -9,6 +9,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,6 +79,8 @@ function variacao(
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
+  const denied = await requireScreen('visao_geral')
+  if (denied) return denied
   try {
     const { searchParams } = new URL(request.url)
     const de     = searchParams.get('de')     || null

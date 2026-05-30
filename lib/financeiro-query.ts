@@ -1,6 +1,7 @@
 import { getPool } from '@/lib/db'
 import type { Lancamento } from '@/lib/types'
 import { applyFiltros, EMPTY_FILTROS, type FinanceiroFiltros } from '@/lib/financeiro-filtros'
+import { parseDataLocal } from '@/lib/utils'
 
 /**
  * Query-builder + normalização do dataset financeiro cru.
@@ -208,11 +209,16 @@ export async function fetchLancamentos({ de, ate, regime, filtros }: FetchLancam
 
 /**
  * Equivale ao `filteredData` do dash: fetchLancamentos + descarte de linhas sem
- * data (useFinanceiro faz `allData.filter(r => r.data)` antes de filtrar). Use
- * nos endpoints agregados cujo input no client era `filteredData`.
+ * data + conversão de `data` (string YYYY-MM-DD) para Date com componentes
+ * LOCAIS — exatamente o que useFinanceiro faz em allData (parseDataLocal) e
+ * depois filteredData (drop de linhas sem data). Assim as funções de agregação
+ * recebem `r.data` como Date nos DOIS caminhos (client OFF e server ON).
  */
 export async function fetchFilteredData(args: FetchLancamentosArgs): Promise<Lancamento[]> {
-  return (await fetchLancamentos(args)).filter(r => r.data)
+  const rows = await fetchLancamentos(args)
+  return rows
+    .filter(r => r.data)
+    .map(r => ({ ...r, data: parseDataLocal(r.data as unknown as string) }))
 }
 
 /** Nomes distintos de contas financeiras (para o multiselect de conta). */
