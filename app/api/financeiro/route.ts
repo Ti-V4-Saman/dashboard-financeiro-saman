@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { fetchLancamentos, fetchContas } from '@/lib/financeiro-query'
+import { isAggBackendEnabled } from '@/lib/feature-aggregation'
+import { getUserAccess } from '@/lib/access'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,6 +16,14 @@ export const dynamic = 'force-dynamic'
  * fechamento). Até lá, comportamento idêntico ao histórico.
  */
 export async function GET(request: Request) {
+  // Fase 2: com a agregação server-side ligada, nenhuma tela consome o array
+  // cru — fecha o endpoint para não-admin (vazamento residual por URL).
+  if (isAggBackendEnabled()) {
+    const acc = await getUserAccess()
+    if (!acc.isAdmin) {
+      return NextResponse.json({ error: 'Endpoint desativado (agregação server-side ativa).' }, { status: 403 })
+    }
+  }
   try {
     const { searchParams } = new URL(request.url)
     const de     = searchParams.get('de')     || null

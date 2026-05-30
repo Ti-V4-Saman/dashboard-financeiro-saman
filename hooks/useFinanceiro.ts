@@ -5,6 +5,9 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import type { Lancamento, Filters, Regime, TipoPeriodo, Atalho } from '@/lib/types'
 import { parseDataLocal } from '@/lib/utils'
 import { applyFiltros } from '@/lib/financeiro-filtros'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher } from '@/lib/agg-client'
+import type { FacetsAgg } from '@/lib/aggregations/facets'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -168,8 +171,12 @@ export function useFinanceiro() {
     return hasUrlParams ? fromUrl : buildDefaultFilters()
   })
 
+  // Fase 2: ON → NÃO baixa o array cru (cada tela usa seu /api/agg/*). O hook
+  // vira store de filtros + período/regime; total e contas vêm das facetas.
+  const aggOn = isAggClientEnabled()
+
   // ── Debounced API key (period + regime changes) ────────────────────────────
-  const rawApiKey    = buildApiUrl(filters.dateFrom, filters.dateTo, filters.regime)
+  const rawApiKey    = aggOn ? null : buildApiUrl(filters.dateFrom, filters.dateTo, filters.regime)
   const debouncedKey = useDebounce(rawApiKey, 300)
 
   const { data: raw, isLoading, isValidating, mutate } = useSWR<{
@@ -178,6 +185,17 @@ export function useFinanceiro() {
   }>(debouncedKey, fetcher, {
     refreshInterval: 15 * 60 * 1000,
     keepPreviousData: true,   // show old data while fetching new — enables subtle loading
+  })
+
+  // Facetas (apenas em ON): total p/ TopBar + lista de contas. Mesma key da
+  // FilterBar → SWR deduplica a chamada.
+  const facetsKey = useDebounce(
+    aggOn ? `/api/agg/facets?de=${filters.dateFrom}&ate=${filters.dateTo}&regime=${filters.regime}` : null,
+    300,
+  )
+  const { data: facets } = useSWR<FacetsAgg>(facetsKey, aggFetcher, {
+    refreshInterval: 15 * 60 * 1000,
+    keepPreviousData: true,
   })
 
   // ── Public filter setter — updates state + URL ─────────────────────────────
@@ -210,7 +228,13 @@ export function useFinanceiro() {
     }))
   }, [raw])
 
-  const listaContas = useMemo(() => raw?.contas || [], [raw])
+  const listaContas = useMemo(
+    () => (aggOn ? (facets?.contas ?? []) : (raw?.contas || [])),
+    [aggOn, facets, raw],
+  )
+
+  // Total para a TopBar: OFF = nº de linhas baixadas; ON = total das facetas.
+  const total = aggOn ? (facets?.total ?? 0) : allData.length
 
   // Client-side filtering (cat, cc, tipo, situacao, conta — NOT date/regime, handled server-side).
   // Usa applyFiltros (lib/financeiro-filtros) — a MESMA função usada server-side
@@ -239,5 +263,6 @@ export function useFinanceiro() {
     isRefetching,
     refresh: mutate,
     listaContas,
+    total,
   }
 }

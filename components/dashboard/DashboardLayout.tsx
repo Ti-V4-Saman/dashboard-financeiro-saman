@@ -28,6 +28,7 @@ interface DashboardLayoutProps {
   isRefetching: boolean
   refresh: () => void
   listaContas: string[]
+  total: number
 }
 
 export function DashboardLayout({
@@ -40,6 +41,7 @@ export function DashboardLayout({
   isRefetching,
   refresh,
   listaContas,
+  total,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
   const { data: session, status } = useSession()
@@ -70,7 +72,7 @@ export function DashboardLayout({
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
-      <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
+      <TopBar isLoading={isLoading} refresh={refresh} total={total} />
       <FilterBar
         filters={filters}
         setFilters={setFilters}
