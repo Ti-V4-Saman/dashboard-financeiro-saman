@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import useSWR from 'swr'
 import {
   BarChart,
   Bar,
@@ -15,101 +16,32 @@ import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Search } from 'lucide-react'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import { aggCentrosCusto, type CentrosCustoAgg } from '@/lib/aggregations/centrosCusto'
 
 interface Props {
-  data: Lancamento[]
+  data?: Lancamento[]
   filters?: Filters
 }
 
 export function CentrosCusto({ data, filters }: Props) {
   const [search, setSearch] = useState('')
+  const regime = filters?.regime ?? 'competencia'
 
-  // Caixa  → só Quitado (cada linha é baixa, pagamento efetivo)
-  // Competência → todos status válidos (reconhecimento na competência)
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  // Caminho duplo (Fase 2): flag ON → endpoint agregado (guardado por requireScreen);
+  // OFF → mesma função pura rodando sobre o array do dash (números idênticos).
+  const aggOn = isAggClientEnabled()
+  const endpoint = aggOn && filters ? `/api/agg/centros-custo?${buildAggQuery(filters)}` : null
+  const { data: remoteAgg } = useSWR<CentrosCustoAgg>(endpoint, aggFetcher, { keepPreviousData: true })
+  const localAgg = useMemo(() => aggCentrosCusto(data ?? [], regime), [data, regime])
+  const agg: CentrosCustoAgg | undefined = aggOn ? remoteAgg : localAgg
 
-  // Aggregate by CC
-  const ccMap = useMemo(() => {
-    const map = new Map<string, { rec: number; desp: number }>()
-    for (const r of op) {
-      for (const c of r._ccList) {
-        if (!c.nome || c.nome === '(em branco)') continue
-        if (!map.has(c.nome)) map.set(c.nome, { rec: 0, desp: 0 })
-        const entry = map.get(c.nome)!
-        if (r.tipo === 'Receita') entry.rec += r.valor
-        else entry.desp += r.valor
-      }
-    }
-    return map
-  }, [op])
-
-  const ccList = useMemo(
-    () =>
-      Array.from(ccMap.entries())
-        .map(([nome, { rec, desp }]) => ({
-          nome,
-          rec,
-          desp,
-          resultado: rec - desp,
-        }))
-        .sort((a, b) => b.desp - a.desp),
-    [ccMap]
-  )
-
-  // 5 grupos fixos de KPI
-  const kpiGroups = useMemo(() => {
-    const sum = (ccs: typeof ccList) =>
-      ccs.reduce((acc, c) => ({ rec: acc.rec + c.rec, desp: acc.desp + c.desp }), { rec: 0, desp: 0 })
-
-    const groups: { label: string; match: (n: string) => boolean }[] = [
-      { label: 'Administrativo',       match: n => n.toLowerCase().startsWith('administrativo') },
-      { label: 'Operação',             match: n => n.toLowerCase().startsWith('operação') || n.toLowerCase().startsWith('operacao') },
-      { label: 'People & Performance', match: n => n.toLowerCase().includes('people') },
-      { label: 'Aquisição e Expansão', match: n => n.toLowerCase().includes('venda') || n.toLowerCase().includes('monetização') || n.toLowerCase().includes('monetizacao') },
-      { label: 'Tecnologia',           match: n => n.toLowerCase().startsWith('tecnologia') },
-    ]
-
-    return groups.map(g => {
-      const ccs = ccList.filter(c => g.match(c.nome))
-      const { rec, desp } = sum(ccs)
-      return { label: g.label, rec, desp, resultado: rec - desp, count: ccs.length }
-    }).filter(g => g.count > 0)
-  }, [ccList])
-
-  const recByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.rec - a.rec)
-        .filter(c => c.rec > 0)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.rec })),
-    [ccList]
-  )
-
-  const despByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.desp - a.desp)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.desp })),
-    [ccList]
-  )
-
-  const resultByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.resultado - a.resultado)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.resultado })),
-    [ccList]
-  )
+  const ccList     = agg?.ccList     ?? []
+  const kpiGroups  = agg?.kpiGroups  ?? []
+  const recByCC    = agg?.recByCC    ?? []
+  const despByCC   = agg?.despByCC   ?? []
+  const resultByCC = agg?.resultByCC ?? []
 
   // Altura dinâmica para gráficos horizontais
   const hBarHeight = (n: number) => Math.max(200, n * 28)

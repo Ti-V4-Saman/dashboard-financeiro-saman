@@ -206,6 +206,15 @@ export async function fetchLancamentos({ de, ate, regime, filtros }: FetchLancam
   return applyFiltros(normalized, filtros ?? EMPTY_FILTROS)
 }
 
+/**
+ * Equivale ao `filteredData` do dash: fetchLancamentos + descarte de linhas sem
+ * data (useFinanceiro faz `allData.filter(r => r.data)` antes de filtrar). Use
+ * nos endpoints agregados cujo input no client era `filteredData`.
+ */
+export async function fetchFilteredData(args: FetchLancamentosArgs): Promise<Lancamento[]> {
+  return (await fetchLancamentos(args)).filter(r => r.data)
+}
+
 /** Nomes distintos de contas financeiras (para o multiselect de conta). */
 export async function fetchContas(): Promise<string[]> {
   const { rows } = await pool.query('SELECT DISTINCT nome FROM ca.contas_financeiras ORDER BY nome')
