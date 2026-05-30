@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
 import { isAdmin } from '@/lib/auth-guard'
+import { sanitizeScreens } from '@/lib/screens'
 
 const pool = getPool()
 
@@ -9,6 +10,8 @@ export interface Usuario {
   nome: string
   email: string
   ativo: boolean
+  is_admin: boolean
+  telas_permitidas: string[]
   criado_em: string
 }
 
@@ -19,7 +22,7 @@ export async function GET() {
   }
   try {
     const { rows } = await pool.query(
-      'SELECT id, nome, email, ativo, criado_em FROM ca.usuarios_dashboard ORDER BY criado_em DESC'
+      'SELECT id, nome, email, ativo, is_admin, telas_permitidas, criado_em FROM ca.usuarios_dashboard ORDER BY criado_em DESC'
     )
     return NextResponse.json(rows)
   } catch (err) {
@@ -28,7 +31,8 @@ export async function GET() {
   }
 }
 
-// ── POST — adiciona novo usuário ──────────────────────────────────────────────
+// ── POST — adiciona novo usuário à allowlist ─────────────────────────────────
+// Cria sem telas (default '{}') e sem admin; permissões são definidas no PATCH.
 export async function POST(req: NextRequest) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
@@ -48,16 +52,46 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ── PATCH — alterna ATIVO (ativa/bloqueia) ────────────────────────────────────
+// ── PATCH — atualiza ativo / is_admin / telas_permitidas (parcial) ───────────
 export async function PATCH(req: NextRequest) {
   if (!(await isAdmin())) {
     return NextResponse.json({ error: 'Sem permissão' }, { status: 403 })
   }
   try {
-    const { id, ativo } = await req.json() as { id: number; ativo: boolean }
+    const body = await req.json() as {
+      id: number
+      ativo?: boolean
+      is_admin?: boolean
+      telas_permitidas?: string[]
+    }
+    if (typeof body.id !== 'number') {
+      return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+    }
+
+    const sets: string[] = []
+    const vals: unknown[] = []
+    let i = 1
+
+    if (typeof body.ativo === 'boolean') {
+      sets.push(`ativo = $${i++}`); vals.push(body.ativo)
+    }
+    if (typeof body.is_admin === 'boolean') {
+      sets.push(`is_admin = $${i++}`); vals.push(body.is_admin)
+    }
+    if (Array.isArray(body.telas_permitidas)) {
+      // 'acesso' é governado pelo is_admin — nunca persistido como tela comum.
+      const telas = sanitizeScreens(body.telas_permitidas).filter(s => s !== 'acesso')
+      sets.push(`telas_permitidas = $${i++}`); vals.push(telas)
+    }
+
+    if (sets.length === 0) {
+      return NextResponse.json({ error: 'nada para atualizar' }, { status: 400 })
+    }
+
+    vals.push(body.id)
     await pool.query(
-      'UPDATE ca.usuarios_dashboard SET ativo = $1 WHERE id = $2',
-      [ativo, id]
+      `UPDATE ca.usuarios_dashboard SET ${sets.join(', ')} WHERE id = $${i}`,
+      vals,
     )
     return NextResponse.json({ ok: true })
   } catch (err) {

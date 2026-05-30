@@ -1,11 +1,15 @@
 'use client'
 
+import { TAB_TO_SCREEN, type Screen } from '@/lib/screens'
+
 type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'notas' | 'acesso'
 
 interface TabNavProps {
   active: Tab
   onChange: (t: Tab) => void
   isAdmin?: boolean
+  /** Slugs de tela que o usuário pode ver. Admin enxerga todas. */
+  allowedScreens: Screen[]
 }
 
 const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
@@ -20,8 +24,13 @@ const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
   { id: 'acesso',      label: '🔐 Acesso', adminOnly: true },
 ]
 
-export function TabNav({ active, onChange, isAdmin }: TabNavProps) {
-  const visible = TABS.filter(t => !t.adminOnly || isAdmin)
+export function TabNav({ active, onChange, isAdmin, allowedScreens }: TabNavProps) {
+  const visible = TABS.filter(t => {
+    // 'acesso' (adminOnly) só para admin — equivale à permissão is_admin.
+    if (t.adminOnly) return !!isAdmin
+    if (isAdmin) return true
+    return allowedScreens.includes(TAB_TO_SCREEN[t.id])
+  })
 
   return (
     <div

@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
 import { requireAdmin } from '@/lib/auth-guard'
+import { requireScreen } from '@/lib/access'
 
 const pool = getPool()
 
-// GET: Listar todas as metas
+// GET: Listar todas as metas (leitura: quem tem a tela 'metas')
 export async function GET() {
+  const denied = await requireScreen('metas')
+  if (denied) return denied
   try {
     const { rows } = await pool.query('SELECT * FROM ca.metas ORDER BY mes_referencia DESC, categoria ASC')
     return NextResponse.json(rows)
