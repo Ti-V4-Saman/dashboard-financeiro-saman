@@ -127,7 +127,7 @@ export function DashboardLayout({
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
-            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
+            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} filters={filters} />}
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
