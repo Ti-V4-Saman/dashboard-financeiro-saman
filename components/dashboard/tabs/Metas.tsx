@@ -8,6 +8,9 @@ import { DRE_LEAVES, NON_DRE_ROWS, KPI_ROWS, ALL_CATEGORY_LEAVES } from '@/lib/c
 import { MetaReplicateModal } from '@/components/dashboard/metas/MetaReplicateModal'
 import { MetaBulkEditModal, type BulkUpdate } from '@/components/dashboard/metas/MetaBulkEditModal'
 import { MetaImportModal } from '@/components/dashboard/metas/MetaImportModal'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher } from '@/lib/agg-client'
+import { aggMetasRealizados, type MetasRealizadosAgg } from '@/lib/aggregations/metasRealizados'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,32 +52,6 @@ function fPctOfFat(val: number, fat: number): string {
 }
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
-
-/** Filtro de "realizado" sensível ao regime contábil.
- *  Caixa  → só Quitado (pagamentos efetivos / baixas)
- *  Competência → todos os status válidos exceto Cancelado/Renegociado */
-function isRealizado(situacao: string, isCaixa: boolean): boolean {
-  if (isCaixa) return situacao === 'Quitado'
-  return situacao !== 'Cancelado' && situacao !== 'Renegociado'
-}
-
-function getRealizadoRaw(m: Meta, allData: Lancamento[], isCaixa: boolean): number {
-  const [y, mo] = m.mes_referencia.split('-').map(Number)
-  return allData
-    .filter(r => {
-      if (!r.data || r.isTransfer) return false
-      if (!isRealizado(r.situacao, isCaixa)) return false
-      if (r.tipo !== m.tipo_lancamento) return false
-      if (r.data.getFullYear() !== y || r.data.getMonth() + 1 !== mo) return false
-      if (m.tipo === 'centro_de_custo') {
-        return (r.cc1 || '').toLowerCase() === (m.centro_de_custo || '').toLowerCase()
-      } else {
-        const cat3 = m.categoria_nivel_3 || m.categoria
-        return (r.cat1 || '').toLowerCase() === (cat3 || '').toLowerCase()
-      }
-    })
-    .reduce((s, r) => s + r.valor, 0)
-}
 
 // ─── Visual config ─────────────────────────────────────────────────────────────
 
@@ -315,15 +292,32 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
 
   // ─── Data Processing ────────────────────────────────────────────────────────
 
-  const isCaixa = (filters.regime ?? 'competencia') === 'caixa'
+  // Realizado (Fase 2): ON → endpoint agregado (sem array cru); OFF → mesma
+  // função pura sobre allData. getRealizado(m) reproduz o getRealizadoRaw antigo.
+  const aggOn = isAggClientEnabled()
+  const realUrl = aggOn
+    ? `/api/agg/metas-realizados?de=${filters.dateFrom}&ate=${filters.dateTo}&regime=${filters.regime}`
+    : null
+  const { data: remoteReal } = useSWR<MetasRealizadosAgg>(realUrl, aggFetcher, { keepPreviousData: true })
+  const localReal = useMemo(
+    () => aggMetasRealizados(allData, filters.regime ?? 'competencia', filters.dateFrom, filters.dateTo),
+    [allData, filters.regime, filters.dateFrom, filters.dateTo],
+  )
+  const real: MetasRealizadosAgg =
+    (aggOn ? remoteReal : localReal) ?? { realByMonthCat: {}, realByMonthCC: {}, realByL3: {}, faturamento: 0 }
 
-  const faturamento = useMemo(() => {
-    const from = new Date(filters.dateFrom)
-    const to   = new Date(filters.dateTo + 'T23:59:59')
-    return allData
-      .filter(r => r.data && r.tipo === 'Receita' && isRealizado(r.situacao, isCaixa) && !r.isTransfer && r.data >= from && r.data <= to)
-      .reduce((s, r) => s + r.valor, 0)
-  }, [allData, filters, isCaixa])
+  const getRealizado = (m: Meta): number => {
+    const month = m.mes_referencia
+    const tipo = m.tipo_lancamento
+    if (m.tipo === 'centro_de_custo') {
+      const key = (m.centro_de_custo || '').toLowerCase()
+      return real.realByMonthCC[month]?.[tipo]?.[key] ?? 0
+    }
+    const key = (m.categoria_nivel_3 || m.categoria || '').toLowerCase()
+    return real.realByMonthCat[month]?.[tipo]?.[key] ?? 0
+  }
+
+  const faturamento = real.faturamento
 
   const metasNoPeriodo = useMemo(
     () => metas.filter(m => m.mes_referencia >= fromMonth && m.mes_referencia <= toMonth),
@@ -348,7 +342,7 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
     () =>
       metasNoPeriodo.map(m => {
         const sign    = m.tipo_lancamento === 'Receita' ? 1 : -1
-        const realRaw = getRealizadoRaw(m, allData, isCaixa)
+        const realRaw = getRealizado(m)
         return {
           ...m,
           planSigned: sign * m.valor_planejado,
@@ -358,23 +352,11 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
           pctExec:    m.valor_planejado > 0 ? realRaw / m.valor_planejado : 0,
         }
       }),
-    [metasNoPeriodo, allData, isCaixa],
+    [metasNoPeriodo, real],
   )
 
   // Valores realizados por cat1 (todos os lançamentos quitados do período)
-  const realByL3 = useMemo(() => {
-    const from = new Date(filters.dateFrom)
-    const to   = new Date(filters.dateTo + 'T23:59:59')
-    const map  = new Map<string, number>()
-    for (const r of allData) {
-      if (!r.data || r.isTransfer || !isRealizado(r.situacao, isCaixa)) continue
-      if (r.data < from || r.data > to) continue
-      if (!r.cat1) continue
-      const sign = r.tipo === 'Receita' ? 1 : -1
-      map.set(r.cat1, (map.get(r.cat1) ?? 0) + sign * r.valor)
-    }
-    return map
-  }, [allData, filters, isCaixa])
+  const realByL3 = useMemo(() => new Map(Object.entries(real.realByL3)), [real])
 
   // Valores planejados por cat3 (metas enriquecidas)
   const planByL3 = useMemo(() => {

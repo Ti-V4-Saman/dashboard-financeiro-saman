@@ -28,6 +28,7 @@ interface DashboardLayoutProps {
   isRefetching: boolean
   refresh: () => void
   listaContas: string[]
+  total: number
 }
 
 export function DashboardLayout({
@@ -40,6 +41,7 @@ export function DashboardLayout({
   isRefetching,
   refresh,
   listaContas,
+  total,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
   const { data: session, status } = useSession()
@@ -70,7 +72,7 @@ export function DashboardLayout({
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
-      <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
+      <TopBar isLoading={isLoading} refresh={refresh} total={total} />
       <FilterBar
         filters={filters}
         setFilters={setFilters}
@@ -127,7 +129,7 @@ export function DashboardLayout({
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
-            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
+            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} filters={filters} />}
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}

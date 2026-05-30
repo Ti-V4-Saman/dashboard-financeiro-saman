@@ -12,6 +12,7 @@ export interface Usuario {
   ativo: boolean
   is_admin: boolean
   telas_permitidas: string[]
+  ver_folha_detalhe: boolean
   criado_em: string
 }
 
@@ -22,7 +23,7 @@ export async function GET() {
   }
   try {
     const { rows } = await pool.query(
-      'SELECT id, nome, email, ativo, is_admin, telas_permitidas, criado_em FROM ca.usuarios_dashboard ORDER BY criado_em DESC'
+      'SELECT id, nome, email, ativo, is_admin, telas_permitidas, ver_folha_detalhe, criado_em FROM ca.usuarios_dashboard ORDER BY criado_em DESC'
     )
     return NextResponse.json(rows)
   } catch (err) {
@@ -63,6 +64,7 @@ export async function PATCH(req: NextRequest) {
       ativo?: boolean
       is_admin?: boolean
       telas_permitidas?: string[]
+      ver_folha_detalhe?: boolean
     }
     if (typeof body.id !== 'number') {
       return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
@@ -77,6 +79,9 @@ export async function PATCH(req: NextRequest) {
     }
     if (typeof body.is_admin === 'boolean') {
       sets.push(`is_admin = $${i++}`); vals.push(body.is_admin)
+    }
+    if (typeof body.ver_folha_detalhe === 'boolean') {
+      sets.push(`ver_folha_detalhe = $${i++}`); vals.push(body.ver_folha_detalhe)
     }
     if (Array.isArray(body.telas_permitidas)) {
       // 'acesso' é governado pelo is_admin — nunca persistido como tela comum.

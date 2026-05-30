@@ -20,6 +20,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
 
 export const dynamic = 'force-dynamic'
 
@@ -33,6 +34,9 @@ interface ContratoLista {
 }
 
 export async function GET(request: Request) {
+  const denied = await requireScreen('visao_geral')
+  if (denied) return denied
+
   const { searchParams } = new URL(request.url)
   const filtro = searchParams.get('filtro') as Filtro | null
 

@@ -1,12 +1,6 @@
 'use client'
 
 import { fR } from '@/lib/utils'
-import {
-  calcTicketMedioReceita,
-  calcDiaDePico,
-  calcBurnDiario,
-} from '@/lib/calcInsights'
-import type { Lancamento } from '@/lib/types'
 
 // ── Tipos vindos do endpoint ──────────────────────────────────────────────────
 
@@ -21,9 +15,12 @@ interface InsightsExtras {
 }
 
 interface Props {
-  data: Lancamento[]
-  dateFrom: string
-  dateTo: string
+  /** Métricas já calculadas (lib/calcInsights, no client OFF ou no servidor ON). */
+  ticket: number
+  pico: { label: string; valor: number } | null
+  burn: number
+  /** Nº de lançamentos do período (op.length) — esconde o bloco quando 0. */
+  count: number
   extras?: InsightsExtras | null
 }
 
@@ -94,12 +91,8 @@ function SubStat({
 
 // ── InsightsPeriodo ───────────────────────────────────────────────────────────
 
-export function InsightsPeriodo({ data, dateFrom, dateTo, extras }: Props) {
-  const ticket = calcTicketMedioReceita(data)
-  const pico   = calcDiaDePico(data)
-  const burn   = calcBurnDiario(data, dateFrom, dateTo)
-
-  if (data.length === 0) return null
+export function InsightsPeriodo({ ticket, pico, burn, count, extras }: Props) {
+  if (count === 0) return null
 
   return (
     <>

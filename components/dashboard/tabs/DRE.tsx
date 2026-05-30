@@ -1,8 +1,16 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import useSWR from 'swr'
 import type { Lancamento, Filters } from '@/lib/types'
-import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
+import { fR, mLbl, getL2Label } from '@/lib/utils'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import {
+  aggDRE, numPrefix,
+  dreGetL1, dreGetL2, dreGetL3, dreGroupSum,
+  type DREAgg, type VM, type HierNode,
+} from '@/lib/aggregations/dre'
 
 // ─── Tooltip (fixed, segue cursor — não é cortado pelo overflow da tabela) ───
 
@@ -60,11 +68,6 @@ interface DRERow {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function numPrefix(s: string): number {
-  const m = s.match(/^([\d.]+)/)
-  return m ? parseFloat(m[1]) : 999
-}
 
 function fPct(val: number, base: number): string {
   if (!base) return '—'
@@ -173,85 +176,28 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }) {
-  // DRE em caixa  → só pagamentos efetivos (baixas, situacao='Quitado')
-  // DRE em competência → todos status válidos (reconhecimento na competência)
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+export function DRE({ data, filters }: { data?: Lancamento[]; filters?: Filters }) {
+  const regime = filters?.regime ?? 'competencia'
 
-  const months = useMemo(() => getMonths(op), [op])
-  const cols   = useMemo(() => [...months, '__acc__'], [months])
+  // Caminho duplo (Fase 2): flag ON → endpoint agregado; OFF → função pura local.
+  // O endpoint devolve vm/hier/months/exec/kpis (somas por categoria, SEM linha
+  // crua); a tabela (dreRows) e o expand/collapse continuam no client.
+  const aggOn = isAggClientEnabled()
+  const endpoint = aggOn && filters ? `/api/agg/dre?${buildAggQuery(filters)}` : null
+  const { data: remoteAgg } = useSWR<DREAgg>(endpoint, aggFetcher, { keepPreviousData: true })
+  const localAgg = useMemo(() => aggDRE(data ?? [], regime), [data, regime])
+  const agg: DREAgg | undefined = aggOn ? remoteAgg : localAgg
 
-  // month → l1 → l2 → l3 → signed value
-  const vm = useMemo(() => {
-    const r: Record<string, Record<string, Record<string, Record<string, number>>>> = {}
-    for (const row of op) {
-      if (!row.data) continue
-      // Prioriza data_ym do backend (TZ-safe). Fallback: getFullYear/Month
-      // do Date (já criado com parseDataLocal — também TZ-safe).
-      const ym = row.data_ym ?? `${row.data.getFullYear()}-${String(row.data.getMonth() + 1).padStart(2, '0')}`
-      const sign = row.tipo === 'Receita' ? 1 : -1
-      const { l1, l2 } = parseCatHier(row.cat1)
-      const l3 = row.cat1 || l2
-      if (!r[ym])          r[ym]          = {}
-      if (!r[ym][l1])      r[ym][l1]      = {}
-      if (!r[ym][l1][l2])  r[ym][l1][l2]  = {}
-      if (!r[ym][l1][l2][l3]) r[ym][l1][l2][l3] = 0
-      r[ym][l1][l2][l3] += sign * row.valorDRE
-    }
-    return r
-  }, [op])
+  const months: string[] = useMemo(() => agg?.months ?? [], [agg])
+  const vm: VM            = useMemo(() => agg?.vm ?? {}, [agg])
+  const hier: HierNode[]  = useMemo(() => agg?.hier ?? [], [agg])
+  const cols              = useMemo(() => [...months, '__acc__'], [months])
 
-  const hier = useMemo(() => {
-    const l1m = new Map<string, Map<string, Set<string>>>()
-    for (const row of op) {
-      const { l1, l2 } = parseCatHier(row.cat1)
-      const l3 = row.cat1 || l2
-      if (!l1m.has(l1)) l1m.set(l1, new Map())
-      if (!l1m.get(l1)!.has(l2)) l1m.get(l1)!.set(l2, new Set())
-      l1m.get(l1)!.get(l2)!.add(l3)
-    }
-    return [...l1m.entries()]
-      .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
-      .map(([l1, l2m]) => ({
-        l1,
-        children: [...l2m.entries()]
-          .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
-          .map(([l2, l3s]) => ({
-            l2,
-            children: [...l3s].sort((a, b) => numPrefix(a) - numPrefix(b)),
-          })),
-      }))
-  }, [op])
-
-  // Value getters
-  const getL3 = (col: string, l1: string, l2: string, l3: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + (vm[m]?.[l1]?.[l2]?.[l3] ?? 0), 0)
-    return vm[col]?.[l1]?.[l2]?.[l3] ?? 0
-  }
-
-  const getL2 = (col: string, l1: string, l2: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + getL2(m, l1, l2), 0)
-    return Object.values(vm[col]?.[l1]?.[l2] ?? {}).reduce((s, v) => s + v, 0)
-  }
-
-  const getL1 = (col: string, l1: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + getL1(m, l1), 0)
-    let s = 0
-    for (const l2v of Object.values(vm[col]?.[l1] ?? {}))
-      for (const v of Object.values(l2v)) s += v
-    return s
-  }
-
-  const groupSum = (col: string, maxPfx: number): number =>
-    hier.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + getL1(col, h.l1), 0)
-
+  // Value getters (sobre vm/months/hier — mesmas funções puras do server)
+  const getL3 = (col: string, l1: string, l2: string, l3: string) => dreGetL3(vm, months, col, l1, l2, l3)
+  const getL2 = (col: string, l1: string, l2: string) => dreGetL2(vm, months, col, l1, l2)
+  const getL1 = (col: string, l1: string) => dreGetL1(vm, months, col, l1)
+  const groupSum = (col: string, maxPfx: number) => dreGroupSum(vm, months, hier, col, maxPfx)
   const makeVals = (fn: (col: string) => number) => cols.map(fn)
 
   // Collapse state — set de EXPANDIDOS (vazio = tudo fechado por padrão)
@@ -337,78 +283,20 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hier, exp1, exp2, months, vm])
 
-  // ── Executive KPIs (accumulated) ──────────────────────────────────────────
-  const exec = useMemo(() => {
-    const recOp       = groupSum('__acc__', 1.99)
-    const recFin      = getL1('__acc__', '6.1 — Rec. Financeira')
-    const recBruta    = recOp + recFin
-    const recLiq      = groupSum('__acc__', 2.99)
-    const lubruto     = groupSum('__acc__', 3.99)
-    const despCom     = getL2('__acc__', '4 — Despesas', '4.1')
-    const margContrib = lubruto + despCom
-    const ebitda      = groupSum('__acc__', 4.99)
-    const ebit        = groupSum('__acc__', 5.99)
-    const lucroLiq    = groupSum('__acc__', 99)
-
-    // Growth Rate: compare last two visible months
-    let growthRate: number | null = null
-    if (months.length >= 2) {
-      const cur = months[months.length - 1]
-      const prv = months[months.length - 2]
-      const curRL = groupSum(cur, 2.99)
-      const prvRL = groupSum(prv, 2.99)
-      if (prvRL) growthRate = (curRL - prvRL) / Math.abs(prvRL)
-    }
-
-    return { recOp, recFin, recBruta, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, growthRate }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [months, vm, hier])
-
-  // ── KPIs inferiores ────────────────────────────────────────────────────────
-  const kpis = useMemo(() => {
-    // Helper: sum op rows matching any of the given cat1 prefixes
-    const S = (...pfx: string[]) =>
-      op.filter(r => pfx.some(p => (r.cat1 || '').startsWith(p)))
-        .reduce((s, r) => s + (r.tipo === 'Receita' ? 1 : -1) * r.valorDRE, 0)
-
-    const recOp      = groupSum('__acc__', 1.99)
-    const recLiq     = groupSum('__acc__', 2.99)
-    const lubruto    = groupSum('__acc__', 3.99)
-    const despCom    = getL2('__acc__', '4 — Despesas', '4.1')
-    const margContrib = lubruto + despCom
-    const ebitda     = groupSum('__acc__', 4.99)
-    const ebit       = groupSum('__acc__', 5.99)
-    const lucroLiq   = groupSum('__acc__', 99)
-    const deducoes   = groupSum('__acc__', 2.99) - groupSum('__acc__', 1.99)
-    const csp        = getL1('__acc__', '3 — Custos Operac.')
-    const terceiros  = getL2('__acc__', '3 — Custos Operac.', '3.3')
-    const despAdmin  = getL2('__acc__', '4 — Despesas', '4.2')
-    const despGerais = getL2('__acc__', '4 — Despesas', '4.3')
-
-    const maoObraCSP   = getL2('__acc__', '3 — Custos Operac.', '3.1')
-    const isaas        = getL2('__acc__', '3 — Custos Operac.', '3.2')
-    const remuCom      = S('4.1.01','4.1.02','4.1.03','4.1.04','4.1.05','4.1.23')
-    const admPessoas   = S('4.2.01','4.2.02','4.2.03','4.2.04','4.2.05','4.2.06','4.2.07','4.2.08','4.2.09','4.2.25','4.2.26')
-    const gastosPessoas = maoObraCSP + isaas + remuCom + admPessoas
-
-    const despAquisicao = S('4.1.02','4.1.04','4.1.06','4.1.07','4.1.08','4.1.10','4.1.11','4.1.12','4.1.13','4.1.14','4.1.15','4.1.16','4.1.17')
-    const leadBroker    = S('4.1.06')
-    const despExpansao  = S('4.1.18','4.1.19','4.1.20','4.1.21','4.1.22','4.1.23')
-    const proLabore     = S('4.2.25','4.2.26')
-
-    const growthRate = exec.growthRate
-
-    return {
-      recOp, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, deducoes,
-      csp, terceiros, despCom, despAdmin, despGerais, gastosPessoas,
-      despAquisicao, leadBroker, despExpansao, proLabore, growthRate,
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [op, months, vm, hier, exec])
+  // exec + kpis vêm do agregado (server ON / função pura OFF).
+  const exec = agg?.exec
+  const kpis = agg?.kpis
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  if (op.length === 0) {
+  if (!agg) {
+    return (
+      <div style={{ textAlign: 'center', padding: 48, color: 'var(--ink3)', fontSize: 12 }}>
+        Carregando…
+      </div>
+    )
+  }
+  if (agg.opLength === 0 || !exec || !kpis) {
     return (
       <div style={{ textAlign: 'center', padding: 48, color: 'var(--ink3)', fontSize: 12 }}>
         Nenhum lançamento quitado no período selecionado.

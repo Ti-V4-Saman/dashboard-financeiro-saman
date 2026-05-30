@@ -8,6 +8,8 @@ export interface UserAccess {
   email: string | null
   isAdmin: boolean
   telasPermitidas: Screen[]
+  /** Pode ver o detalhe (fornecedor/cliente) das linhas de folha. Admin sempre true. */
+  verFolhaDetalhe: boolean
 }
 
 /**
@@ -23,23 +25,24 @@ export interface UserAccess {
 export async function getUserAccessByEmail(
   email: string | null | undefined,
 ): Promise<UserAccess> {
-  if (!email) return { email: null, isAdmin: false, telasPermitidas: [] }
+  if (!email) return { email: null, isAdmin: false, telasPermitidas: [], verFolhaDetalhe: false }
   const e = email.toLowerCase()
   try {
     const { rows } = await getPool().query(
-      'SELECT is_admin, telas_permitidas FROM ca.usuarios_dashboard WHERE LOWER(email) = $1 AND ativo = true',
+      'SELECT is_admin, telas_permitidas, ver_folha_detalhe FROM ca.usuarios_dashboard WHERE LOWER(email) = $1 AND ativo = true',
       [e],
     )
-    if (rows.length === 0) return { email: e, isAdmin: false, telasPermitidas: [] }
+    if (rows.length === 0) return { email: e, isAdmin: false, telasPermitidas: [], verFolhaDetalhe: false }
     const isAdmin = rows[0].is_admin === true
     return {
       email: e,
       isAdmin,
       telasPermitidas: isAdmin ? [...ALL_SCREENS] : sanitizeScreens(rows[0].telas_permitidas),
+      verFolhaDetalhe: isAdmin || rows[0].ver_folha_detalhe === true,
     }
   } catch (err) {
     console.error('[access] erro ao ler permissões:', err)
-    return { email: e, isAdmin: false, telasPermitidas: [] } // fail-closed
+    return { email: e, isAdmin: false, telasPermitidas: [], verFolhaDetalhe: false } // fail-closed
   }
 }
 
@@ -54,16 +57,24 @@ export async function getUserAccess(): Promise<UserAccess> {
       email: process.env.DEV_USER_EMAIL || 'dev@local.test',
       isAdmin: true,
       telasPermitidas: [...ALL_SCREENS],
+      verFolhaDetalhe: true,
     }
   }
   const session = await auth()
   const u = session?.user
-  if (!u?.email) return { email: null, isAdmin: false, telasPermitidas: [] }
+  if (!u?.email) return { email: null, isAdmin: false, telasPermitidas: [], verFolhaDetalhe: false }
+  const isAdmin = u.isAdmin === true
   return {
     email: u.email,
-    isAdmin: u.isAdmin === true,
-    telasPermitidas: u.isAdmin ? [...ALL_SCREENS] : sanitizeScreens(u.telasPermitidas),
+    isAdmin,
+    telasPermitidas: isAdmin ? [...ALL_SCREENS] : sanitizeScreens(u.telasPermitidas),
+    verFolhaDetalhe: isAdmin || (u as { verFolhaDetalhe?: boolean }).verFolhaDetalhe === true,
   }
+}
+
+/** O usuário do request atual pode ver o detalhe (fornecedor/desc) das linhas de folha? */
+export async function canSeeFolhaDetalhe(): Promise<boolean> {
+  return (await getUserAccess()).verFolhaDetalhe
 }
 
 /**

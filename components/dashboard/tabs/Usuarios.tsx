@@ -39,13 +39,13 @@ export function UsuariosTab() {
 
   // Editor de permissões por usuário (linha expansível)
   const [permsFor, setPermsFor] = useState<number | null>(null)
-  const [draft, setDraft] = useState<{ is_admin: boolean; telas: string[] }>({ is_admin: false, telas: [] })
+  const [draft, setDraft] = useState<{ is_admin: boolean; telas: string[]; ver_folha_detalhe: boolean }>({ is_admin: false, telas: [], ver_folha_detalhe: false })
   const [savingPerms, setSavingPerms] = useState(false)
 
   const openPerms = (u: Usuario) => {
     if (permsFor === u.id) { setPermsFor(null); return }
     setPermsFor(u.id)
-    setDraft({ is_admin: !!u.is_admin, telas: u.telas_permitidas ?? [] })
+    setDraft({ is_admin: !!u.is_admin, telas: u.telas_permitidas ?? [], ver_folha_detalhe: !!u.ver_folha_detalhe })
   }
 
   const toggleTela = (slug: string) => {
@@ -60,7 +60,7 @@ export function UsuariosTab() {
     const res = await fetch('/api/usuarios', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: u.id, is_admin: draft.is_admin, telas_permitidas: draft.telas }),
+      body: JSON.stringify({ id: u.id, is_admin: draft.is_admin, telas_permitidas: draft.telas, ver_folha_detalhe: draft.ver_folha_detalhe }),
     })
     setSavingPerms(false)
     if (res.ok) {
@@ -344,6 +344,19 @@ export function UsuariosTab() {
                         <Shield size={14} style={{ color: 'var(--brand)' }} />
                         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
                           Administrador <span style={{ fontWeight: 400, color: 'var(--ink3)' }}>(gerencia usuários + enxerga todas as telas)</span>
+                        </span>
+                      </label>
+
+                      {/* Toggle folha detalhada */}
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: draft.is_admin ? 'default' : 'pointer', marginBottom: 12 }}>
+                        <input
+                          type="checkbox"
+                          disabled={draft.is_admin}
+                          checked={draft.is_admin || draft.ver_folha_detalhe}
+                          onChange={e => setDraft(d => ({ ...d, ver_folha_detalhe: e.target.checked }))}
+                        />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                          Ver folha detalhada <span style={{ fontWeight: 400, color: 'var(--ink3)' }}>(fornecedor/descrição das linhas de folha em Lançamentos)</span>
                         </span>
                       </label>
 

@@ -40,6 +40,10 @@ import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
+import { applyFiltros } from '@/lib/financeiro-filtros'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import type { ResumoTrimestralAgg } from '@/lib/aggregations/resumoTrimestral'
 
 interface Props {
   filters: Filters
@@ -572,8 +576,12 @@ function CardSkeleton() {
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export default function ResumoTrimestralWidget({ filters }: Props) {
+  // Fase 2: ON → endpoint agregado guardado (sem array cru nem /api/metas direto);
+  // OFF → comportamento atual (fetch do cru + calcMes client-side).
+  const aggOn = isAggClientEnabled()
+
   const { data: metas = [], isLoading: metasLoading } = useSWR<Meta[]>(
-    '/api/metas',
+    aggOn ? null : '/api/metas',
     fetcher,
     { refreshInterval: 5 * 60 * 1000 },
   )
@@ -603,9 +611,20 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   )
 
   const { data: apiResp, isLoading: dataLoading } = useSWR<{ lancamentos: Lancamento[] }>(
-    apiUrl,
+    aggOn ? null : apiUrl,
     fetcher,
     { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
+  )
+
+  // Caminho ON: endpoint agregado (range M-1..M+2, competência, 5 filtros).
+  const rtUrl = aggOn
+    ? `/api/agg/resumo-trimestral?${buildAggQuery(
+        { ...filters, dateFrom: rangeDe, dateTo: rangeAte, regime: 'competencia' },
+        { mesAnt, mesRef, mesM1, mesM2 },
+      )}`
+    : null
+  const { data: remoteRT, isLoading: rtLoading } = useSWR<ResumoTrimestralAgg>(
+    rtUrl, aggFetcher, { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
   )
 
   const apiData = useMemo<Lancamento[]>(
@@ -617,22 +636,17 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   // exceto data). Filtros: categoria, cc, tipo, situacao, conta + regras de
   // ouro: !isTransfer, !Cancelado, !Renegociado.
   const dataFiltradaNaoTemporal = useMemo(() => {
-    return apiData.filter(r => {
-      if (r.isTransfer) return false
-      if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
-
-      if (filters.categoria.length > 0) {
-        const cats = r.categorias.map(c => c.nome)
-        if (!filters.categoria.some(c => cats.includes(c))) return false
-      }
-      if (filters.cc.length > 0) {
-        const ccs = r._ccList.map(c => c.nome)
-        if (!filters.cc.some(c => ccs.includes(c))) return false
-      }
-      if (filters.tipo            && r.tipo     !== filters.tipo)     return false
-      if (filters.situacao.length > 0 && !filters.situacao.includes(r.situacao)) return false
-      if (filters.conta.length    > 0 && !filters.conta.includes(r.conta))       return false
-      return true
+    // Regras de ouro do card + os 5 filtros não-temporais via applyFiltros
+    // (mesma função usada server-side, garante paridade).
+    const base = apiData.filter(
+      r => !r.isTransfer && r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado',
+    )
+    return applyFiltros(base, {
+      categoria: filters.categoria,
+      cc:        filters.cc,
+      tipo:      filters.tipo,
+      situacao:  filters.situacao,
+      conta:     filters.conta,
     })
   }, [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
 
@@ -641,12 +655,20 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   // pertencem ao mês do pagamento (caixa), não ao mês de competência futuro.
   // Mês anterior (para Δ): competência completa, para comparação consistente
   // com o mês de referência.
-  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas, false), [mesRef,  dataFiltradaNaoTemporal, metas])
-  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas, true),  [mesM1,   dataFiltradaNaoTemporal, metas])
-  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas, true),  [mesM2,   dataFiltradaNaoTemporal, metas])
-  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas, false), [mesAnt,  dataFiltradaNaoTemporal, metas])
+  const EMPTY_MES: MesCalc = { ym: '', hasData: false, linhas: [] }
+  const localRef = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas, false), [mesRef,  dataFiltradaNaoTemporal, metas])
+  const localM1  = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas, true),  [mesM1,   dataFiltradaNaoTemporal, metas])
+  const localM2  = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas, true),  [mesM2,   dataFiltradaNaoTemporal, metas])
+  const localAnt = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas, false), [mesAnt,  dataFiltradaNaoTemporal, metas])
 
-  const loading = (metasLoading && metas.length === 0) || (dataLoading && !apiResp)
+  const calcRef = aggOn ? (remoteRT?.calcRef ?? EMPTY_MES) : localRef
+  const calcM1  = aggOn ? (remoteRT?.calcM1  ?? EMPTY_MES) : localM1
+  const calcM2  = aggOn ? (remoteRT?.calcM2  ?? EMPTY_MES) : localM2
+  const calcAnt = aggOn ? (remoteRT?.calcAnt ?? EMPTY_MES) : localAnt
+
+  const loading = aggOn
+    ? (rtLoading && !remoteRT)
+    : (metasLoading && metas.length === 0) || (dataLoading && !apiResp)
 
   return (
     <section>

@@ -1,9 +1,10 @@
 'use client'
 
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import useSWR from 'swr'
 import { ChevronUp, ChevronDown, Search } from 'lucide-react'
-import type { Lancamento } from '@/lib/types'
-import { fR, fDt } from '@/lib/utils'
+import type { Lancamento, Filters } from '@/lib/types'
+import { fR, fDt, parseDataLocal } from '@/lib/utils'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
@@ -14,17 +15,27 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import { aggLancamentos, type SortKey, type SortDir } from '@/lib/aggregations/lancamentos'
 
 interface Props {
-  data: Lancamento[]
+  data?: Lancamento[]
+  filters?: Filters
 }
-
-type SortKey = 'data' | 'valor'
-type SortDir = 'asc' | 'desc'
 
 const PAGE_SIZE = 50
 
-export function Lancamentos({ data }: Props) {
+interface LancamentosResp {
+  rows: Array<Omit<Lancamento, 'data'> & { data: string | null }>
+  total: number
+  totalPages: number
+  page: number
+  totais: { rec: number; desp: number; resultado: number }
+  contas: string[]
+}
+
+export function Lancamentos({ data, filters }: Props) {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [conta, setConta] = useState('')
@@ -48,51 +59,36 @@ export function Lancamentos({ data }: Props) {
     setPage(1)
   }, [conta])
 
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+  // Caminho duplo (Fase 2): ON → endpoint paginado/guardado (com mascaramento de
+  // folha server-side); OFF → mesma lógica local sobre o array do dash.
+  const aggOn = isAggClientEnabled()
+  const onUrl = aggOn && filters
+    ? `/api/agg/lancamentos?${buildAggQuery(filters, {
+        q: debouncedSearch,
+        conta_tab: conta,
+        sort: sortKey,
+        dir: sortDir,
+        page: String(page),
+        pageSize: String(PAGE_SIZE),
+      })}`
+    : null
+  const { data: remote } = useSWR<LancamentosResp>(onUrl, aggFetcher, { keepPreviousData: true })
 
-  const contas = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of op) {
-      if (r.conta && r.conta !== '(em branco)') set.add(r.conta)
-    }
-    return Array.from(set).sort()
-  }, [op])
+  const localAgg = useMemo(
+    () => aggLancamentos(data ?? [], { q: debouncedSearch, conta, sortKey, sortDir, page, pageSize: PAGE_SIZE }),
+    [data, debouncedSearch, conta, sortKey, sortDir, page],
+  )
 
-  const filtered = useMemo(() => {
-    let rows = op
-    if (debouncedSearch) {
-      const q = debouncedSearch.toLowerCase()
-      rows = rows.filter(
-        r =>
-          r.desc.toLowerCase().includes(q) ||
-          r.fornecedor.toLowerCase().includes(q) ||
-          r.cat1.toLowerCase().includes(q) ||
-          r.conta.toLowerCase().includes(q) ||
-          r.cc1.toLowerCase().includes(q)
-      )
-    }
-    if (conta) rows = rows.filter(r => r.conta === conta)
-    return rows
-  }, [op, debouncedSearch, conta])
-
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      if (sortKey === 'data') {
-        const ta = a.data?.getTime() || 0
-        const tb = b.data?.getTime() || 0
-        return sortDir === 'desc' ? tb - ta : ta - tb
-      } else {
-        return sortDir === 'desc' ? b.valor - a.valor : a.valor - b.valor
-      }
-    })
-  }, [filtered, sortKey, sortDir])
-
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
-  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
-
-  const recTotal = filtered.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-  const despTotal = filtered.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-  const resultado = recTotal - despTotal
+  const pageRows: Lancamento[] = aggOn
+    ? (remote?.rows ?? []).map(r => ({ ...r, data: r.data ? parseDataLocal(r.data) : null }) as Lancamento)
+    : localAgg.pageRows
+  const totalCount = aggOn ? (remote?.total ?? 0)      : localAgg.total
+  const totalPages = aggOn ? (remote?.totalPages ?? 1) : localAgg.totalPages
+  const contas     = aggOn ? (remote?.contas ?? [])    : localAgg.contas
+  const totais     = aggOn ? (remote?.totais ?? { rec: 0, desp: 0, resultado: 0 }) : localAgg.totais
+  const recTotal  = totais.rec
+  const despTotal = totais.desp
+  const resultado = totais.resultado
 
   const toggleSort = useCallback(
     (key: SortKey) => {
@@ -133,7 +129,7 @@ export function Lancamentos({ data }: Props) {
         </div>
         <div>
           <span className="text-[10px] font-semibold uppercase tracking-wider mr-2" style={{ color: 'var(--ink3)' }}>Qtd</span>
-          <span className="text-[13px] font-bold" style={{ color: 'var(--blue)' }}>{filtered.length.toLocaleString('pt-BR')}</span>
+          <span className="text-[13px] font-bold" style={{ color: 'var(--blue)' }}>{totalCount.toLocaleString('pt-BR')}</span>
         </div>
       </div>
 
@@ -265,7 +261,7 @@ export function Lancamentos({ data }: Props) {
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3" style={{ borderTop: '1px solid var(--line)' }}>
               <span className="text-[11px]" style={{ color: 'var(--ink3)' }}>
-                {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} de {sorted.length.toLocaleString('pt-BR')}
+                {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, totalCount)} de {totalCount.toLocaleString('pt-BR')}
               </span>
               <div className="flex items-center gap-1">
                 <Button

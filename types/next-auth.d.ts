@@ -6,6 +6,8 @@ declare module 'next-auth' {
       isAdmin?: boolean
       /** Slugs de tela permitidos (lib/screens.ts). Admin recebe todas. */
       telasPermitidas?: string[]
+      /** Pode ver detalhe (fornecedor/desc) de linhas de folha. Admin sempre true. */
+      verFolhaDetalhe?: boolean
     } & DefaultSession['user']
   }
 }

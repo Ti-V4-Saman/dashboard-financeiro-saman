@@ -1,9 +1,13 @@
 'use client'
 
 import { useMemo, useState, useEffect, useRef } from 'react'
+import useSWR from 'swr'
 import { X, ChevronDown, ChevronLeft, ChevronRight, Check, Search } from 'lucide-react'
 import type { Filters, Lancamento, TipoPeriodo, Atalho } from '@/lib/types'
 import { resolveAtalho } from '@/hooks/useFinanceiro'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher } from '@/lib/agg-client'
+import type { FacetsAgg } from '@/lib/aggregations/facets'
 
 interface FilterBarProps {
   filters: Filters
@@ -779,8 +783,16 @@ export function FilterBar({ filters, setFilters, clearAll, allData, listaContas 
   const patchFilters = (patch: Partial<Filters>) =>
     setFilters({ ...filters, ...patch })
 
-  // Dynamic options from data
-  const categorias = useMemo(() => {
+  // Opções dos filtros: ON → endpoint de facetas (allData não desce mais);
+  // OFF → deriva do allData local (comportamento atual). Facetas refletem o
+  // período (de/ate/regime), não os 5 filtros.
+  const aggOn = isAggClientEnabled()
+  const facetsUrl = aggOn
+    ? `/api/agg/facets?de=${filters.dateFrom}&ate=${filters.dateTo}&regime=${filters.regime}`
+    : null
+  const { data: facets } = useSWR<FacetsAgg>(facetsUrl, aggFetcher, { keepPreviousData: true })
+
+  const localCategorias = useMemo(() => {
     const set = new Set<string>()
     for (const r of allData)
       for (const c of r.categorias)
@@ -788,7 +800,7 @@ export function FilterBar({ filters, setFilters, clearAll, allData, listaContas 
     return Array.from(set).sort()
   }, [allData])
 
-  const centrosCusto = useMemo(() => {
+  const localCentrosCusto = useMemo(() => {
     const set = new Set<string>()
     for (const r of allData)
       for (const c of r._ccList)
@@ -796,14 +808,17 @@ export function FilterBar({ filters, setFilters, clearAll, allData, listaContas 
     return Array.from(set).sort()
   }, [allData])
 
-  const situacoes = useMemo(() => {
+  const localSituacoes = useMemo(() => {
     const set = new Set<string>()
     for (const r of allData)
       if (r.situacao && r.situacao !== '(em branco)') set.add(r.situacao)
     return Array.from(set).sort()
   }, [allData])
 
-  const contas = useMemo(() => listaContas.sort(), [listaContas])
+  const categorias   = aggOn ? (facets?.categorias   ?? []) : localCategorias
+  const centrosCusto = aggOn ? (facets?.centrosCusto ?? []) : localCentrosCusto
+  const situacoes    = aggOn ? (facets?.situacoes    ?? []) : localSituacoes
+  const contas       = aggOn ? (facets?.contas ?? []) : listaContas.slice().sort()
 
   // "Limpar tudo" shows if any non-default filter is active
   const hasFilters =

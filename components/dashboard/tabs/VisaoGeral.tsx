@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState, useEffect } from 'react'
+import useSWR from 'swr'
 import {
   BarChart,
   Bar,
@@ -10,15 +11,18 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
-import { fR, fDt } from '@/lib/utils'
+import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
 import { InsightsPeriodo } from '@/components/dashboard/InsightsPeriodo'
 import { BlocosResumo, type BlocosData } from '@/components/dashboard/BlocosResumo'
 import ResumoTrimestralWidget from '@/components/dashboard/widgets/ResumoTrimestralWidget'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import { aggVisaoGeral, type VisaoGeralAgg } from '@/lib/aggregations/visaoGeral'
 
 interface Props {
-  data: Lancamento[]
+  data?: Lancamento[]
   filters?: Filters
 }
 
@@ -78,86 +82,34 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data, filters }: Props) {
-  // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
-  // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
-  // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
-  //               porque a receita é reconhecida na competência, não no pagamento
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  const regime   = filters?.regime ?? 'competencia'
+  const dateFrom = filters?.dateFrom ?? ''
+  const dateTo   = filters?.dateTo ?? ''
 
-  const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
-    let rec = 0, desp = 0, atr = 0
-    const hoje = new Date()
-    for (const r of op) {
-      if (r.tipo === 'Receita') rec += r.valor
-      else desp += r.valor
-    }
-    for (const r of data) {
-      if ((r.situacao === 'Atrasado' || r.situacao === 'Aberto') && r.data && r.data < hoje) {
-        atr += r.valor
-      }
-    }
-    const res = rec - desp
-    return { receita: rec, despesa: desp, resultado: res, margem: rec > 0 ? (res / rec) * 100 : 0, atrasados: atr }
-  }, [op, data])
+  // Caminho duplo (Fase 2): flag ON → endpoint agregado; OFF → função pura local.
+  const aggOn = isAggClientEnabled()
+  const endpoint = aggOn && filters ? `/api/agg/visao-geral?${buildAggQuery(filters)}` : null
+  const { data: remoteAgg } = useSWR<VisaoGeralAgg>(endpoint, aggFetcher, { keepPreviousData: true })
+  const localAgg = useMemo(
+    () => aggVisaoGeral(data ?? [], regime, dateFrom, dateTo),
+    [data, regime, dateFrom, dateTo],
+  )
+  const agg: VisaoGeralAgg | undefined = aggOn ? remoteAgg : localAgg
 
-  const semCat = useMemo(() => op.filter(r => !r.cat1 || r.cat1 === '(em branco)').length, [op])
-  const semCC  = useMemo(() => op.filter(r => !r.cc1  || r.cc1  === '(em branco)').length, [op])
-
-  // Daily data for bar chart
-  const dailyData = useMemo(() => {
-    const map = new Map<string, { data: string; rec: number; desp: number }>()
-    for (const r of op) {
-      if (!r.data) continue
-      const key = fDt(r.data)
-      if (!map.has(key)) map.set(key, { data: key, rec: 0, desp: 0 })
-      const entry = map.get(key)!
-      if (r.tipo === 'Receita') entry.rec += r.valor
-      else entry.desp += r.valor
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      const [da, ma, ya] = a.data.split('/').map(Number)
-      const [db, mb, yb] = b.data.split('/').map(Number)
-      return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime()
-    })
-  }, [op])
-
-  // Top 10 despesas por categoria
-  const topDespCat = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Despesa') continue
-      const key = r.cat1 || 'Sem categoria'
-      map.set(key, (map.get(key) || 0) + r.valor)
-    }
-    return Array.from(map.entries())
-      .map(([nome, valor]) => ({ nome, valor }))
-      .sort((a, b) => b.valor - a.valor)
-      .slice(0, 10)
-  }, [op])
+  const receita    = agg?.receita    ?? 0
+  const despesa    = agg?.despesa    ?? 0
+  const resultado  = agg?.resultado  ?? 0
+  const margem     = agg?.margem     ?? 0
+  const atrasados  = agg?.atrasados  ?? 0
+  const opLength   = agg?.opLength   ?? 0
+  const semCat     = agg?.semCat     ?? 0
+  const semCC      = agg?.semCC      ?? 0
+  const dailyData  = agg?.dailyData  ?? []
+  const topDespCat = agg?.topDespCat ?? []
+  const topCC      = agg?.topCC      ?? []
+  const insights   = agg?.insights   ?? { ticket: 0, pico: null, burn: 0 }
   const maxDespCat = topDespCat[0]?.valor || 1
-
-  // Top 10 CC
-  const topCC = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Despesa') continue
-      for (const c of r._ccList) {
-        map.set(c.nome, (map.get(c.nome) || 0) + r.valor)
-      }
-    }
-    return Array.from(map.entries())
-      .map(([nome, valor]) => ({ nome, valor }))
-      .sort((a, b) => b.valor - a.valor)
-      .slice(0, 10)
-  }, [op])
-  const maxCC = topCC[0]?.valor || 1
+  const maxCC      = topCC[0]?.valor || 1
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
@@ -198,7 +150,7 @@ export function VisaoGeral({ data, filters }: Props) {
           value={`${margem.toFixed(1)}%`}
           color={margem >= 10 ? 'var(--green)' : margem >= 0 ? 'var(--amber)' : 'var(--red)'}
         />
-        <KpiCard label="Lançamentos" value={op.length.toLocaleString('pt-BR')} color="var(--blue)" />
+        <KpiCard label="Lançamentos" value={opLength.toLocaleString('pt-BR')} color="var(--blue)" />
         <KpiCard
           label="Atrasados"
           value={fR(atrasados)}
@@ -278,9 +230,10 @@ export function VisaoGeral({ data, filters }: Props) {
 
             {/* InsightsPeriodo — renderizado dentro do mesmo card */}
             <InsightsPeriodo
-              data={op}
-              dateFrom={filters?.dateFrom ?? ''}
-              dateTo={filters?.dateTo ?? ''}
+              ticket={insights.ticket}
+              pico={insights.pico}
+              burn={insights.burn}
+              count={opLength}
               extras={extras?.insights ?? null}
             />
           </CardContent>
