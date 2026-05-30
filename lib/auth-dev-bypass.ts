@@ -25,6 +25,7 @@ export function getDevBypassSession() {
       isAdmin: true,
       // Dev bypass enxerga todas as telas (espelha isAdmin).
       telasPermitidas: [...ALL_SCREENS],
+      verFolhaDetalhe: true,
     },
     expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   }
