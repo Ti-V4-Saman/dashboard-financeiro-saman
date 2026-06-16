@@ -21,19 +21,26 @@ interface Props {
   filters?: Filters
 }
 
+// Caixa = o que movimentou ou deveria movimentar no mês: Quitado (por data_pagamento)
+// + Aberto/Atrasado (por data_vencimento — o backend já posiciona `data` por situação).
+// Parcial fica de fora por ora (split valor pago x aberto — backlog).
+function filtraOperacional(data: Lancamento[], regime: string): Lancamento[] {
+  const isCaixa = regime === 'caixa'
+  return data.filter(r => {
+    if (r.isTransfer) return false
+    if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
+    if (isCaixa && r.situacao === 'Parcial') return false
+    return true
+  })
+}
+
 export function CentrosCusto({ data, filters }: Props) {
   const [search, setSearch] = useState('')
 
-  // Caixa  → só Quitado (cada linha é baixa, pagamento efetivo)
-  // Competência → todos status válidos (reconhecimento na competência)
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  const op = useMemo(
+    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
+    [data, filters?.regime]
+  )
 
   // Aggregate by CC
   const ccMap = useMemo(() => {
