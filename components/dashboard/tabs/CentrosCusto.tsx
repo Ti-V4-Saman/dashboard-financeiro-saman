@@ -14,6 +14,12 @@ import type { Lancamento, Filters } from '@/lib/types'
 import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { Search } from 'lucide-react'
 
 interface Props {
@@ -34,13 +40,74 @@ function filtraOperacional(data: Lancamento[], regime: string): Lancamento[] {
   })
 }
 
+interface CCDetalheRow {
+  desc: string
+  contraparte: string
+  categoria: string
+  tipo: 'Receita' | 'Despesa'
+  valor: number
+}
+
+// Reusa filtraOperacional → a soma do modal fecha com a barra por construção.
+function detalhePorCC(
+  data: Lancamento[],
+  regime: string,
+  ccNome: string,
+  tipoFiltro?: 'Receita' | 'Despesa'
+): CCDetalheRow[] {
+  return filtraOperacional(data, regime)
+    .filter(r =>
+      r._ccList.some(c => c.nome && c.nome !== '(em branco)' && c.nome === ccNome)
+    )
+    .filter(r => !tipoFiltro || r.tipo === tipoFiltro)
+    .map(r => ({
+      desc: r.desc,
+      contraparte: r.fornecedor,
+      categoria: r.cat1,
+      tipo: r.tipo,
+      valor: r.valor,
+    }))
+    .sort((a, b) => b.valor - a.valor)
+}
+
 export function CentrosCusto({ data, filters }: Props) {
   const [search, setSearch] = useState('')
+
+  // Modal de conferência por CC
+  const [ccSel, setCcSel] = useState<string | null>(null)
+  const [tipoSel, setTipoSel] = useState<'Receita' | 'Despesa' | undefined>(undefined)
+  const [open, setOpen] = useState(false)
 
   const op = useMemo(
     () => filtraOperacional(data, filters?.regime ?? 'competencia'),
     [data, filters?.regime]
   )
+
+  const linhas = useMemo(
+    () =>
+      ccSel
+        ? detalhePorCC(data, filters?.regime ?? 'competencia', ccSel, tipoSel)
+        : [],
+    [ccSel, tipoSel, data, filters?.regime]
+  )
+
+  const totaisModal = useMemo(() => {
+    let rec = 0
+    let desp = 0
+    for (const l of linhas) {
+      if (l.tipo === 'Receita') rec += l.valor
+      else desp += l.valor
+    }
+    return { rec, desp, resultado: rec - desp }
+  }, [linhas])
+
+  const abrir = (nome?: string, tipo?: 'Receita' | 'Despesa') => {
+    if (!nome) return
+    // TODO gate: se !admin && !temAcesso('lancamentos') → mensagem "sem permissão, contate o admin"
+    setCcSel(nome)
+    setTipoSel(tipo)
+    setOpen(true)
+  }
 
   // Aggregate by CC
   const ccMap = useMemo(() => {
@@ -183,7 +250,17 @@ export function CentrosCusto({ data, filters }: Props) {
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
                 <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
-                <Bar dataKey="value" name="Receita" fill="var(--green)" radius={[0, 3, 3, 0]} maxBarSize={16} />
+                <Bar
+                  dataKey="value"
+                  name="Receita"
+                  fill="var(--green)"
+                  radius={[0, 3, 3, 0]}
+                  maxBarSize={16}
+                  cursor="pointer"
+                  onClick={(d: { payload?: { name?: string }; name?: string }) =>
+                    abrir(d?.payload?.name ?? d?.name, 'Receita')
+                  }
+                />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -197,7 +274,17 @@ export function CentrosCusto({ data, filters }: Props) {
                 <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
                 <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
-                <Bar dataKey="value" name="Despesa" fill="var(--red)" radius={[0, 3, 3, 0]} maxBarSize={16} />
+                <Bar
+                  dataKey="value"
+                  name="Despesa"
+                  fill="var(--red)"
+                  radius={[0, 3, 3, 0]}
+                  maxBarSize={16}
+                  cursor="pointer"
+                  onClick={(d: { payload?: { name?: string }; name?: string }) =>
+                    abrir(d?.payload?.name ?? d?.name, 'Despesa')
+                  }
+                />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -213,7 +300,15 @@ export function CentrosCusto({ data, filters }: Props) {
               <XAxis type="number" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} tickFormatter={fmtShort} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: 'var(--ink3)' }} tickLine={false} axisLine={false} width={150} />
               <Tooltip formatter={(v: number) => fR(v)} {...barTooltip} />
-              <Bar dataKey="value" name="Resultado" radius={[0, 3, 3, 0]} maxBarSize={16}
+              <Bar
+                dataKey="value"
+                name="Resultado"
+                radius={[0, 3, 3, 0]}
+                maxBarSize={16}
+                cursor="pointer"
+                onClick={(d: { payload?: { name?: string }; name?: string }) =>
+                  abrir(d?.payload?.name ?? d?.name)
+                }
                 label={{ position: 'right', fontSize: 9, fill: 'var(--ink3)', formatter: fmtShort }}
               >
                 {resultByCC.map((d, i) => (
@@ -248,7 +343,12 @@ export function CentrosCusto({ data, filters }: Props) {
             </thead>
             <tbody>
               {filteredCC.map(c => (
-                <tr key={c.nome} style={{ borderBottom: '1px solid var(--line)' }} className="hover:bg-[var(--surf2)] transition-colors">
+                <tr
+                  key={c.nome}
+                  onClick={() => abrir(c.nome)}
+                  style={{ borderBottom: '1px solid var(--line)' }}
+                  className="hover:bg-[var(--surf2)] transition-colors cursor-pointer"
+                >
                   <td className="py-2 pl-3 text-[11px]" style={{ color: 'var(--ink2)' }}>{c.nome}</td>
                   <td className="py-2 pr-3 text-right text-[11px] font-semibold" style={{ color: 'var(--green)' }}>{fR(c.rec)}</td>
                   <td className="py-2 pr-3 text-right text-[11px] font-semibold" style={{ color: 'var(--red)' }}>{fR(c.desp)}</td>
@@ -261,6 +361,104 @@ export function CentrosCusto({ data, filters }: Props) {
           </table>
         </CardContent>
       </Card>
+
+      {/* Modal deslizante de conferência por CC */}
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetContent side="right" className="w-full sm:max-w-2xl overflow-y-auto">
+          <SheetHeader>
+            <div className="flex items-center gap-2 flex-wrap">
+              <SheetTitle className="text-[14px]">{ccSel}</SheetTitle>
+              {tipoSel && (
+                <span
+                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none"
+                  style={{
+                    background: tipoSel === 'Receita' ? 'var(--green-l, #e7f7ef)' : 'var(--red-l, #fde9ec)',
+                    color: tipoSel === 'Receita' ? 'var(--green)' : 'var(--red)',
+                  }}
+                >
+                  {tipoSel}
+                </span>
+              )}
+              <span className="text-[10px]" style={{ color: 'var(--ink3)' }}>
+                {linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
+              <span>Rec: <strong style={{ color: 'var(--green)' }}>{fR(totaisModal.rec)}</strong></span>
+              <span>Desp: <strong style={{ color: 'var(--red)' }}>{fR(totaisModal.desp)}</strong></span>
+              <span>
+                Resultado:{' '}
+                <strong style={{ color: totaisModal.resultado >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {fR(totaisModal.resultado)}
+                </strong>
+              </span>
+            </div>
+          </SheetHeader>
+
+          <div className="mt-4">
+            <table className="w-full">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                  {/* TODO 1ª coluna "Código Lançamento" após expor o campo no SELECT da API + tipo Lancamento */}
+                  <th className="py-1.5 pl-3 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Descrição</th>
+                  <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Fornecedor ou Cliente</th>
+                  <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Categoria</th>
+                  <th
+                    className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap"
+                    style={{ color: 'var(--ink3)', width: 110 }}
+                  >
+                    Valor
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {linhas.map((l, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
+                    <td className="py-2 pl-3 text-[11px]" style={{ color: 'var(--ink2)' }}>{l.desc}</td>
+                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)' }}>{l.contraparte}</td>
+                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }}>{l.categoria}</td>
+                    <td
+                      className="py-2 pr-3 text-right text-[11px] font-semibold tabular-nums whitespace-nowrap"
+                      style={{ color: l.tipo === 'Receita' ? 'var(--green)' : 'var(--red)', width: 110 }}
+                    >
+                      {fR(l.valor)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: '2px solid var(--line)' }}>
+                  <td colSpan={3} className="py-2 pl-3 text-[11px] font-semibold" style={{ color: 'var(--ink3)' }}>
+                    Total {tipoSel ?? 'líquido'}
+                  </td>
+                  <td
+                    className="py-2 pr-3 text-right text-[11px] font-bold tabular-nums whitespace-nowrap"
+                    style={{
+                      color:
+                        tipoSel === 'Receita'
+                          ? 'var(--green)'
+                          : tipoSel === 'Despesa'
+                          ? 'var(--red)'
+                          : totaisModal.resultado >= 0
+                          ? 'var(--green)'
+                          : 'var(--red)',
+                      width: 110,
+                    }}
+                  >
+                    {fR(
+                      tipoSel === 'Receita'
+                        ? totaisModal.rec
+                        : tipoSel === 'Despesa'
+                        ? totaisModal.desp
+                        : totaisModal.resultado
+                    )}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
