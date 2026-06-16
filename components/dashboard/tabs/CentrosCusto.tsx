@@ -364,7 +364,10 @@ export function CentrosCusto({ data, filters }: Props) {
 
       {/* Modal deslizante de conferência por CC */}
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="w-full sm:max-w-2xl overflow-y-auto">
+        <SheetContent
+          side="right"
+          className="w-full overflow-y-auto sm:!max-w-none sm:w-1/2"
+        >
           <SheetHeader>
             <div className="flex items-center gap-2 flex-wrap">
               <SheetTitle className="text-[14px]">{ccSel}</SheetTitle>
