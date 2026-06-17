@@ -2,8 +2,14 @@
 
 import { useMemo, useState } from 'react'
 import type { Lancamento, Filters } from '@/lib/types'
-import { filtraOperacional } from '@/lib/financeiro/regime'
-import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
+import { filtraOperacional, detalheDRE } from '@/lib/financeiro/regime'
+import { fR, fDt, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 
 // ─── Tooltip (fixed, segue cursor — não é cortado pelo overflow da tabela) ───
 
@@ -172,6 +178,68 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
   )
 }
 
+// ─── Matcher para o modal de conferência ──────────────────────────────────────
+// Espelha as fórmulas que constroem cada `row.vals` em build-dreRows. Se a fórmula
+// mudar aqui ou lá, mudar nos dois lugares — senão o rodapé do modal deixa de
+// bater com a célula.
+function matcherForRow(row: DRERow): (r: Lancamento) => boolean {
+  switch (row.kind) {
+    case 'l1':
+      return r => parseCatHier(r.cat1).l1 === row.l1Key
+    case 'l2':
+      return r => {
+        const h = parseCatHier(r.cat1)
+        return h.l1 === row.l1Key && h.l2 === row.l2Key
+      }
+    case 'l3':
+      return r => r.cat1 === row.label
+    case 'subtotal':
+    case 'ebitda':
+    case 'resultado':
+      switch (row.id) {
+        case '__recLiq__':
+          return r => numPrefix(parseCatHier(r.cat1).l1) <= 2.99
+        case '__lubruto__':
+          return r => numPrefix(parseCatHier(r.cat1).l1) <= 3.99
+        case '__margContrib__':
+          return r => {
+            const h = parseCatHier(r.cat1)
+            const p = numPrefix(h.l1)
+            return p <= 3.99 || (h.l1 === '4 — Despesas' && h.l2 === '4.1')
+          }
+        case '__ebitda__':
+          return r => numPrefix(parseCatHier(r.cat1).l1) <= 4.99
+        case '__ebit__':
+          return r => numPrefix(parseCatHier(r.cat1).l1) <= 5.99
+        case '__ebt__':
+          return r => numPrefix(parseCatHier(r.cat1).l1) <= 6.99
+        case '__lucroliq__':
+          return () => true
+        default:
+          return () => false
+      }
+    default:
+      return () => false
+  }
+}
+
+// "2026-06" → "Junho/2026"
+const MES_NOME = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
+                  'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+function periodoLabel(mes: string | undefined, dateFrom?: string, dateTo?: string): string {
+  if (mes && mes.length >= 7) {
+    const [y, m] = mes.split('-').map(Number)
+    return `${MES_NOME[m - 1]}/${y}`
+  }
+  const fmt = (s?: string) => {
+    if (!s || s.length < 10) return s || '—'
+    const [y, mo, d] = s.split('-')
+    return `${d}/${mo}/${y}`
+  }
+  if (dateFrom && dateTo) return `${fmt(dateFrom)} → ${fmt(dateTo)}`
+  return '—'
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }) {
@@ -256,6 +324,41 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
     setExp1(prev => { const n = new Set(prev); n.has(l1) ? n.delete(l1) : n.add(l1); return n })
   const toggleL2 = (l2: string) =>
     setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
+
+  // Modal de conferência por linha
+  const [linhaSel, setLinhaSel] = useState<{
+    label: string
+    matcher: (r: Lancamento) => boolean
+    kind: 'n3' | 'agrupador' | 'subtotal'
+  } | null>(null)
+  const [mesSel, setMesSel] = useState<string | undefined>(undefined)
+  const [open, setOpen] = useState(false)
+
+  const linhasModal = useMemo(
+    () => linhaSel
+      ? detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
+      : [],
+    [linhaSel, mesSel, data, filters?.regime]
+  )
+
+  const kindModal = (rowKind: DRERow['kind']): 'n3' | 'agrupador' | 'subtotal' => {
+    if (rowKind === 'l3') return 'n3'
+    if (rowKind === 'l1' || rowKind === 'l2') return 'agrupador'
+    return 'subtotal'
+  }
+
+  const abrirPeriodo = (row: DRERow) => {
+    // TODO gate: se !admin && !temAcesso('lancamentos') → mensagem "sem permissão, contate o admin"
+    setLinhaSel({ label: row.label, matcher: matcherForRow(row), kind: kindModal(row.kind) })
+    setMesSel(undefined)
+    setOpen(true)
+  }
+  const abrirMes = (row: DRERow, mes: string) => (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setLinhaSel({ label: row.label, matcher: matcherForRow(row), kind: kindModal(row.kind) })
+    setMesSel(mes)
+    setOpen(true)
+  }
 
   // ── Build dreRows ──────────────────────────────────────────────────────────
   const { dreRows, recLiqVals } = useMemo(() => {
@@ -581,10 +684,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                     }}
                   >
                     <td
-                      onClick={() => {
-                        if (row.kind === 'l1') toggleL1(row.l1Key!)
-                        if (row.kind === 'l2') toggleL2(row.l2Key!)
-                      }}
+                      onClick={() => abrirPeriodo(row)}
                       style={{
                         position: 'sticky', left: 0, zIndex: 2,
                         background: s.bg,
@@ -592,13 +692,24 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                         fontWeight: s.fw,
                         fontSize: s.fs,
                         padding: `${s.py}px 16px ${s.py}px ${ind}px`,
-                        cursor: canT ? 'pointer' : 'default',
+                        cursor: 'pointer',
                         whiteSpace: 'nowrap',
                         borderRight: '2px solid var(--line)',
                         userSelect: 'none',
                       }}
                     >
-                      {arrow}
+                      {canT && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (row.kind === 'l1') toggleL1(row.l1Key!)
+                            else if (row.kind === 'l2') toggleL2(row.l2Key!)
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          {arrow}
+                        </span>
+                      )}
                       {row.tip
                         ? <Tip text={row.tip}><span>{row.label}</span></Tip>
                         : row.label}
@@ -613,9 +724,11 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                       const pctFg = row.kind === 'ebitda' || row.kind === 'resultado'
                         ? 'rgba(0,0,0,0.45)' : 'var(--ink3)'
 
+                      const cellOnClick = isAcc ? (() => abrirPeriodo(row)) : abrirMes(row, col)
                       return [
                         <td
                           key={`${row.id}-${col}-r`}
+                          onClick={cellOnClick}
                           style={{
                             padding: `${s.py}px 8px`,
                             textAlign: 'right',
@@ -625,12 +738,14 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                             background: bg,
                             borderLeft: '1px solid var(--line)',
                             whiteSpace: 'nowrap',
+                            cursor: 'pointer',
                           }}
                         >
                           {fR(val)}
                         </td>,
                         <td
                           key={`${row.id}-${col}-p`}
+                          onClick={cellOnClick}
                           style={{
                             padding: `${s.py}px 8px`,
                             textAlign: 'right',
@@ -639,6 +754,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                             color: pctFg,
                             background: bg,
                             whiteSpace: 'nowrap',
+                            cursor: 'pointer',
                           }}
                         >
                           {fPct(val, recLiqVals[ci])}
@@ -751,6 +867,149 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
         </div>
       </div>
 
+      <DRESheet
+        open={open}
+        onOpenChange={setOpen}
+        linhaSel={linhaSel}
+        linhas={linhasModal}
+        periodo={periodoLabel(mesSel, filters?.dateFrom, filters?.dateTo)}
+      />
+
     </div>
+  )
+}
+
+// ─── Sheet de conferência por linha ──────────────────────────────────────────
+
+function DRESheet({
+  open, onOpenChange, linhaSel, linhas, periodo,
+}: {
+  open: boolean
+  onOpenChange: (b: boolean) => void
+  linhaSel: { label: string; matcher: (r: Lancamento) => boolean; kind: 'n3' | 'agrupador' | 'subtotal' } | null
+  linhas: ReturnType<typeof detalheDRE>
+  periodo: string
+}) {
+  const hasReceita = linhas.some(l => l.tipo === 'Receita')
+  const hasDespesa = linhas.some(l => l.tipo === 'Despesa')
+  const isMixed = hasReceita && hasDespesa
+
+  const totalRec = linhas.filter(l => l.tipo === 'Receita').reduce((s, l) => s + l.valor, 0)
+  const totalDesp = linhas.filter(l => l.tipo === 'Despesa').reduce((s, l) => s + l.valor, 0)
+  const totalLiq = totalRec + totalDesp
+
+  const catCount = new Set(linhas.map(l => l.categoria)).size
+
+  const badgeLabel = isMixed
+    ? 'Receita + dedução'
+    : hasReceita ? 'Receita' : hasDespesa ? 'Despesa' : '—'
+  const badgeBg = isMixed
+    ? 'var(--surf2)'
+    : hasReceita ? 'var(--green-l, #e7f7ef)' : 'var(--red-l, #fde9ec)'
+  const badgeFg = isMixed
+    ? 'var(--ink3)'
+    : hasReceita ? 'var(--green)' : 'var(--red)'
+
+  const showCategoria = linhaSel?.kind !== 'n3'
+
+  const fRSigned = (v: number) => (v > 0 ? '+' : '') + fR(v)
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-[60vw] sm:max-w-[60vw] overflow-y-auto">
+        <SheetHeader>
+          <div className="flex items-center gap-2 flex-wrap">
+            <SheetTitle className="text-[14px]">{linhaSel?.label ?? ''}</SheetTitle>
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none"
+              style={{ background: badgeBg, color: badgeFg }}
+            >
+              {badgeLabel}
+            </span>
+          </div>
+          <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
+            {periodo} · {linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
+            {linhaSel && linhaSel.kind !== 'n3' && (
+              <> · {catCount} categoria{catCount === 1 ? '' : 's'}</>
+            )}
+          </div>
+          <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
+            {isMixed ? (
+              <>
+                <span>Receita: <strong style={{ color: 'var(--green)' }}>{fRSigned(totalRec)}</strong></span>
+                <span>Despesa: <strong style={{ color: 'var(--red)' }}>{fRSigned(totalDesp)}</strong></span>
+                <span>Líquido: <strong style={{ color: totalLiq >= 0 ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
+              </>
+            ) : (
+              <span>Total: <strong style={{ color: hasReceita ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
+            )}
+          </div>
+        </SheetHeader>
+
+        <div className="mt-4">
+          <table className="w-full" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: 84 }} />
+              <col />
+              <col style={{ width: '22%' }} />
+              <col style={{ width: '18%' }} />
+              {showCategoria && <col style={{ width: '20%' }} />}
+              <col style={{ width: 130 }} />
+            </colgroup>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                {/* TODO 1ª coluna "Código Lançamento" após expor o campo no SELECT da API + tipo Lancamento */}
+                <th className="py-1.5 pl-3 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Data</th>
+                <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Descrição</th>
+                <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Fornecedor ou Cliente</th>
+                <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>CC</th>
+                {showCategoria && (
+                  <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Categoria</th>
+                )}
+                <th className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap" style={{ color: 'var(--ink3)' }}>Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map((l, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
+                  <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(l.data)}</td>
+                  <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.desc}>{l.desc}</td>
+                  <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.contraparte}>{l.contraparte}</td>
+                  <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.cc}>{l.cc}</td>
+                  {showCategoria && (
+                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.categoria}>{l.categoria}</td>
+                  )}
+                  <td
+                    className="py-2 pr-3 text-right text-[11px] font-semibold whitespace-nowrap"
+                    style={{
+                      color: l.tipo === 'Receita' ? 'var(--green)' : 'var(--red)',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {fRSigned(l.valor)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ borderTop: '2px solid var(--line)' }}>
+                <td colSpan={showCategoria ? 5 : 4} className="py-2 pl-3 text-[11px] font-semibold" style={{ color: 'var(--ink3)' }}>
+                  Total líquido
+                </td>
+                <td
+                  className="py-2 pr-3 text-right text-[11px] font-bold whitespace-nowrap"
+                  style={{
+                    color: isMixed ? 'var(--ink)' : hasReceita ? 'var(--green)' : 'var(--red)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {fRSigned(totalLiq)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }
