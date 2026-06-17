@@ -175,14 +175,18 @@ export function VisaoGeral({ data, filters }: Props) {
       .catch(() => setLoading(false))
   }, [filters?.dateFrom, filters?.dateTo, filters?.regime])
 
+  // Em caixa, os KPIs grandes refletem "o que movimentou ou deveria movimentar
+  // no mês" (Quitado + Aberto + Atrasado). O sufixo "Provisionado" deixa claro
+  // que o valor inclui esperado, e não só o dinheiro que efetivamente entrou/saiu.
+  const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
+
   return (
     <div className="space-y-4">
-      {/* KPI Row — inalterado */}
       <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))' }}>
-        <KpiCard label="Receita Bruta" value={fR(receita)} color="var(--green)" />
-        <KpiCard label="Despesas"      value={fR(despesa)} color="var(--red)" />
+        <KpiCard label={isCaixa ? 'Receita Provisionada' : 'Receita Bruta'} value={fR(receita)} color="var(--green)" />
+        <KpiCard label={isCaixa ? 'Despesa Provisionada' : 'Despesas'}      value={fR(despesa)} color="var(--red)" />
         <KpiCard
-          label="Resultado"
+          label={isCaixa ? 'Resultado Provisionado' : 'Resultado'}
           value={fR(resultado)}
           color={resultado >= 0 ? 'var(--green)' : 'var(--red)'}
         />
