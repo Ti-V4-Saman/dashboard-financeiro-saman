@@ -11,6 +11,7 @@ import {
   Cell,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
+import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -25,19 +26,6 @@ import { Search } from 'lucide-react'
 interface Props {
   data: Lancamento[]
   filters?: Filters
-}
-
-// Caixa = o que movimentou ou deveria movimentar no mês: Quitado (por data_pagamento)
-// + Aberto/Atrasado (por data_vencimento — o backend já posiciona `data` por situação).
-// Parcial fica de fora por ora (split valor pago x aberto — backlog).
-function filtraOperacional(data: Lancamento[], regime: string): Lancamento[] {
-  const isCaixa = regime === 'caixa'
-  return data.filter(r => {
-    if (r.isTransfer) return false
-    if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
-    if (isCaixa && r.situacao === 'Parcial') return false
-    return true
-  })
 }
 
 interface CCDetalheRow {
