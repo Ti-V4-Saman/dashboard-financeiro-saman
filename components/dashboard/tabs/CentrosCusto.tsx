@@ -354,7 +354,7 @@ export function CentrosCusto({ data, filters }: Props) {
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
           side="right"
-          className="w-full overflow-y-auto sm:!max-w-none sm:w-1/2"
+          className="w-[60vw] sm:max-w-[60vw] overflow-y-auto"
         >
           <SheetHeader>
             <div className="flex items-center gap-2 flex-wrap">
