@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
+import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR, fDt } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
@@ -78,18 +79,10 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data, filters }: Props) {
-  // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
-  // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
-  // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
-  //               porque a receita é reconhecida na competência, não no pagamento
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  const op = useMemo(
+    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
+    [data, filters?.regime]
+  )
 
   const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
     let rec = 0, desp = 0, atr = 0

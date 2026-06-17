@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import type { Lancamento, Filters } from '@/lib/types'
+import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
 
 // ─── Tooltip (fixed, segue cursor — não é cortado pelo overflow da tabela) ───
@@ -174,16 +175,10 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }) {
-  // DRE em caixa  → só pagamentos efetivos (baixas, situacao='Quitado')
-  // DRE em competência → todos status válidos (reconhecimento na competência)
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  const op = useMemo(
+    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
+    [data, filters?.regime]
+  )
 
   const months = useMemo(() => getMonths(op), [op])
   const cols   = useMemo(() => [...months, '__acc__'], [months])

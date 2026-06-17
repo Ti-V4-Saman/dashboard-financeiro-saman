@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
+import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
 
 // ─── Visual config (mirrors DRE) ─────────────────────────────────────────────
@@ -46,16 +47,9 @@ interface Props {
 }
 
 export function Comparativo({ data, allData, filters }: Props) {
-  // Caixa  → só Quitado (cada linha é baixa, pagamento efetivo)
-  // Competência → todos status válidos (reconhecimento na competência)
-  const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-  const validRow = (r: Lancamento) => {
-    if (r.isTransfer) return false
-    if (isCaixa) return r.situacao === 'Quitado'
-    return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-  }
-  const op    = useMemo(() => data.filter(validRow),    [data, isCaixa])    // eslint-disable-line react-hooks/exhaustive-deps
-  const allOp = useMemo(() => allData.filter(validRow), [allData, isCaixa]) // eslint-disable-line react-hooks/exhaustive-deps
+  const regime = filters?.regime ?? 'competencia'
+  const op    = useMemo(() => filtraOperacional(data,    regime), [data,    regime])
+  const allOp = useMemo(() => filtraOperacional(allData, regime), [allData, regime])
 
   // months derived from filtered data → chart and tables respect the selected period
   const months = useMemo(() => getMonths(op), [op])
