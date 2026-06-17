@@ -684,7 +684,10 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                     }}
                   >
                     <td
-                      onClick={() => abrirPeriodo(row)}
+                      onClick={canT ? () => {
+                        if (row.kind === 'l1') toggleL1(row.l1Key!)
+                        else if (row.kind === 'l2') toggleL2(row.l2Key!)
+                      } : undefined}
                       style={{
                         position: 'sticky', left: 0, zIndex: 2,
                         background: s.bg,
@@ -692,24 +695,13 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
                         fontWeight: s.fw,
                         fontSize: s.fs,
                         padding: `${s.py}px 16px ${s.py}px ${ind}px`,
-                        cursor: 'pointer',
+                        cursor: canT ? 'pointer' : 'default',
                         whiteSpace: 'nowrap',
                         borderRight: '2px solid var(--line)',
                         userSelect: 'none',
                       }}
                     >
-                      {canT && (
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (row.kind === 'l1') toggleL1(row.l1Key!)
-                            else if (row.kind === 'l2') toggleL2(row.l2Key!)
-                          }}
-                          style={{ cursor: 'pointer' }}
-                        >
-                          {arrow}
-                        </span>
-                      )}
+                      {arrow}
                       {row.tip
                         ? <Tip text={row.tip}><span>{row.label}</span></Tip>
                         : row.label}
