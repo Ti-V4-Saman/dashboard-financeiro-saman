@@ -235,28 +235,38 @@ def sync_saldo_contas(
                         or resp.get("saldo_disponivel")
                     )
 
-                if saldo is not None:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE ca.contas_financeiras
-                               SET saldo_atual             = %s,
-                                   data_ultima_conciliacao = %s,
-                                   synced_at               = %s
-                             WHERE id = %s
-                            """,
-                            (_float(saldo), hoje, datetime.now(timezone.utc), str(conta_id)),
-                        )
-                    conn.commit()
-                    records += 1
-                    logger.info(
-                        "%-30s -> saldo R$ %.2f atualizado para conta %s",
-                        "/conta-financeira/{id}/saldo-atual",
-                        _float(saldo),
+                # saldo=None vem para contas zeradas/sem movimento na CA.
+                # Listing /v1/conta-financeira já confirmou que a conta está ativa,
+                # então tratamos None como 0.0 e persistimos — garante que synced_at
+                # reflete a ULTIMA CHECAGEM, não a ultima mudança.
+                saldo_final = _float(saldo) if saldo is not None else 0.0
+
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE ca.contas_financeiras
+                           SET saldo_atual             = %s,
+                               data_ultima_conciliacao = %s,
+                               synced_at               = %s
+                         WHERE id = %s
+                        """,
+                        (saldo_final, hoje, datetime.now(timezone.utc), str(conta_id)),
+                    )
+                conn.commit()
+                records += 1
+
+                if saldo is None:
+                    logger.warning(
+                        "Saldo não retornado para conta %s — gravando 0.00",
                         conta_id,
                     )
                 else:
-                    logger.warning("Saldo não retornado para conta %s", conta_id)
+                    logger.info(
+                        "%-30s -> saldo R$ %.2f atualizado para conta %s",
+                        "/conta-financeira/{id}/saldo-atual",
+                        saldo_final,
+                        conta_id,
+                    )
 
             except Exception as exc:
                 conn.rollback()
