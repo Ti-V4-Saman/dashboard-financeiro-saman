@@ -65,6 +65,7 @@ def _map_conta_financeira(raw: Dict[str, Any]) -> Dict[str, Any]:
         "numero_conta":  _str(raw.get("account_number") or raw.get("numero_conta") or "") or None,
         "saldo_inicial": _float(raw.get("initial_balance") or raw.get("initialBalance") or raw.get("saldo_inicial") or 0),
         "ativo":         bool(raw.get("active", raw.get("ativo", True))),
+        "synced_at":     datetime.now(timezone.utc),
     }
 
 
