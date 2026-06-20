@@ -134,7 +134,11 @@ export async function GET(request: Request) {
           cf.synced_at,
           CASE
             WHEN cf.tipo = 'CARTAO_CREDITO' THEN
-              -COALESCE(pvc.valor_vencido, 0)
+              -- Issue #34: parcelas vencidas em aberto que ja foram pagas
+              -- via transferencia agrupada (fatura) nao sao zeradas individualmente
+              -- pela API CA. Descontamos transferencias recebidas para evitar dupla
+              -- contagem; se transf_in cobriu toda a divida vencida, saldo = 0.
+              -GREATEST(0, COALESCE(pvc.valor_vencido, 0) - COALESCE(ti.valor_in, 0))
             WHEN cf.tipo = 'MEIOS_RECEBIMENTO' THEN
               COALESCE(mb.movimento, 0)
               + COALESCE(ti.valor_in, 0)
