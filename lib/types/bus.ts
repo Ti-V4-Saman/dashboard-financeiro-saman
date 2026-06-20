@@ -9,10 +9,14 @@
 
 export type BU = 'operacao' | 'receita' | 'nao_operacional' | 'sem_categoria'
 
+/** Chaves dos KPIs clicáveis. Contrato API↔UI por causa de `link_target`. */
+export type KpiKey = 'receita_liquida' | 'custos' | 'margem_bruta' | 'despesas_op' | 'ebitda' | 'nao_op'
+
 export interface BuKpis {
-  receita_bruta: number       // Σ cat 1.x (cat de receita)
-  deducoes: number            // Σ |cat 2.x| (deduções, valor absoluto)
-  receita_liquida: number     // receita_bruta − deducoes
+  receita_bruta: number       // Σ cat 1.x da BU
+  deducoes: number            // RATEADO (desde 0005): total_deducoes × proporcao desta BU
+  proporcao: number           // 0..1; participação desta BU na receita bruta op+receita
+  receita_liquida: number     // receita_bruta − deducoes (rateado)
   custos: number              // Σ cat 3.x
   margem_bruta: number        // receita_liquida − custos
   despesas_op: number         // Σ cat 4.x
@@ -46,16 +50,23 @@ export interface BuTopItem {
 }
 
 export interface BuLancamento {
-  id: string                       // `${tipo_origem}:${id_db}` para evitar colisão
-  data: string                     // YYYY-MM-DD
+  id: string                       // `${tipo_origem}:${id_db}` ou `sintetica:<key>`
+  data: string                     // YYYY-MM-DD; '' quando sintética
   descricao: string
   categoria: string
-  categoria_l1: number             // 1..7 (prefixo numérico do nome da categoria); 999 se sem categoria
+  categoria_l1: number             // 1..7; 999 se sem categoria
   centro_custo: string
   contraparte: string
   tipo: 'Receita' | 'Despesa'
   status: string
-  valor: number                    // sempre positivo
+  valor: number                    // sempre positivo (sinal é dado pelo `tipo`)
+  /** Marcador de linha sintética (não é um lançamento físico). Hoje usado
+   *  pelo rateio de deduções na BU Receita: a linha representa a parcela
+   *  rateada cujos lançamentos físicos vivem em outra BU. */
+  _sintetica?: boolean
+  /** Destino de navegação ao clicar na sintética. Frontend troca de sub-tab
+   *  e seleciona o KPI indicado. */
+  link_target?: { bu: BU; kpi: KpiKey }
 }
 
 export interface BuData {
