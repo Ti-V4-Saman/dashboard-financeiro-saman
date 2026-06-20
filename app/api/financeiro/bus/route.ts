@@ -1,0 +1,357 @@
+/**
+ * GET /api/financeiro/bus?de=YYYY-MM-DD&ate=YYYY-MM-DD
+ *
+ * Agrega KPIs + evolução 6 meses + top categorias + lançamentos recentes
+ * por BU. Regime competência (data = COALESCE(data_competencia, data_vencimento),
+ * igual DRE). Classificação via JOIN com ca.v_lancamento_bu.
+ *
+ * Regras de ouro aplicadas no SQL:
+ *   - status NOT IN ('Cancelado', 'Renegociado')
+ *   - origem NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+ *   - categoria NOT LIKE '(-)%' / '(+)%' / '(Não DRE)%'
+ *
+ * Pagamento Parcial entra com `total` (valor face) — competência puro.
+ *
+ * Operação e Receita sempre vêm (mesmo zeradas, pra fixar as tabs).
+ * Não Operacional e Sem Categoria só vêm se houver lançamentos.
+ */
+
+import { NextResponse } from 'next/server'
+import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
+import type { BU, BuData, BusApiResponse, BuKpis, BuEvolucaoPonto, BuTopItem, BuLancamento } from '@/lib/types/bus'
+
+export const dynamic = 'force-dynamic'
+
+const pool = getPool()
+
+interface BaseRow {
+  id_lancamento: string
+  tipo_origem: 'receber' | 'pagar'
+  tipo: 'Receita' | 'Despesa'
+  descricao: string
+  data_iso: string          // YYYY-MM-DD
+  data_ym: string           // YYYY-MM
+  valor: string             // numeric vem como string em pg
+  status: string
+  origem: string
+  categoria_nome: string
+  centro_custo_nome: string
+  contraparte_nome: string
+  bu: BU
+}
+
+// "YYYY-MM-DD" → primeiro dia do mês (YYYY-MM-01) deslocado -n meses
+function shiftMonth(ate: string, deltaMonths: number): string {
+  const [y, m] = ate.split('-').map(Number)
+  const d = new Date(Date.UTC(y, m - 1 + deltaMonths, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`
+}
+
+// Último dia do mês de "YYYY-MM"
+function endOfMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(Date.UTC(y, m, 0))  // dia 0 do próximo mês = último do atual
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+}
+
+function ymOf(date: string): string {
+  return date.slice(0, 7)
+}
+
+// Pega o prefixo numérico do nome da categoria. "3.2.05 Algo" → "3.2"
+// Usado para os tops dentro de cada BU.
+function catPrefix(nome: string): string {
+  const m = nome.match(/^(\d+\.\d+(?:\.\d+)?)/)
+  return m ? m[1] : nome
+}
+
+function l1Prefix(nome: string): number {
+  const m = nome.match(/^(\d+)/)
+  return m ? parseInt(m[1], 10) : 999
+}
+
+function zeroKpis(): BuKpis {
+  return {
+    receita_bruta: 0, deducoes: 0, receita_liquida: 0,
+    custos: 0, margem_bruta: 0, despesas_op: 0, ebitda: 0,
+    margem_ebitda_pct: 0,
+    nao_operacional_total: 0,
+    qtd_lancamentos: 0, total_bruto: 0,
+    delta_vs_m1: { receita_liquida_pct: null, ebitda_pct: null, margem_ebitda_pp: null },
+  }
+}
+
+function calcKpisForBU(rows: BaseRow[], bu: BU): BuKpis {
+  const k = zeroKpis()
+  k.qtd_lancamentos = rows.length
+
+  for (const r of rows) {
+    const v = Math.abs(Number(r.valor))
+    k.total_bruto += v
+
+    const p1 = l1Prefix(r.categoria_nome)
+
+    if (bu === 'nao_operacional') {
+      // 5/6/7. Receita financeira (6.1) é receita; resto é despesa.
+      if (r.tipo === 'Receita') k.nao_operacional_total += v
+      else k.nao_operacional_total -= v
+      continue
+    }
+
+    // Para operacao/receita/sem_categoria, decompõe por L1:
+    if (p1 === 1) k.receita_bruta += v
+    else if (p1 === 2) k.deducoes += v
+    else if (p1 === 3) k.custos += v
+    else if (p1 === 4) k.despesas_op += v
+    // cat 5/6/7 não entra aqui (já tratada em nao_operacional)
+  }
+
+  k.receita_liquida = k.receita_bruta - k.deducoes
+  k.margem_bruta = k.receita_liquida - k.custos
+  k.ebitda = k.margem_bruta - k.despesas_op
+  k.margem_ebitda_pct = k.receita_liquida > 0 ? (k.ebitda / k.receita_liquida) * 100 : 0
+
+  return k
+}
+
+function calcEvolucao(rows: BaseRow[], window: string[]): BuEvolucaoPonto[] {
+  // window = lista ordenada de YYYY-MM (6 itens)
+  const acc = new Map<string, { receita: number; despesa: number; ebitda: number }>()
+  for (const ym of window) acc.set(ym, { receita: 0, despesa: 0, ebitda: 0 })
+
+  for (const r of rows) {
+    const e = acc.get(r.data_ym)
+    if (!e) continue
+    const v = Math.abs(Number(r.valor))
+    const p1 = l1Prefix(r.categoria_nome)
+    if (p1 === 1) { e.receita += v; e.ebitda += v }
+    else if (p1 === 2) { e.receita -= v; e.ebitda -= v }       // deduções: drenam receita líquida
+    else if (p1 === 3) { e.despesa += v; e.ebitda -= v }       // custos
+    else if (p1 === 4) { e.despesa += v; e.ebitda -= v }       // despesas op
+    // 5/6/7 ficam fora do EBITDA por definição
+  }
+
+  return window.map(ym => ({ mes: ym, ...acc.get(ym)! }))
+}
+
+function calcTops(rows: BaseRow[], n: number): { despesas: BuTopItem[]; receitas: BuTopItem[] } {
+  const desp = new Map<string, number>()
+  const rec  = new Map<string, number>()
+  for (const r of rows) {
+    const v = Math.abs(Number(r.valor))
+    const key = catPrefix(r.categoria_nome) + (r.categoria_nome.slice(catPrefix(r.categoria_nome).length))
+    const map = r.tipo === 'Receita' ? rec : desp
+    map.set(key, (map.get(key) || 0) + v)
+  }
+  const toSorted = (m: Map<string, number>) =>
+    Array.from(m.entries())
+      .map(([categoria, valor]) => ({ categoria, valor }))
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, n)
+  return { despesas: toSorted(desp), receitas: toSorted(rec) }
+}
+
+function pickLancamentos(rows: BaseRow[], n: number): BuLancamento[] {
+  return [...rows]
+    .sort((a, b) => b.data_iso.localeCompare(a.data_iso))
+    .slice(0, n)
+    .map(r => ({
+      id: `${r.tipo_origem}:${r.id_lancamento}`,
+      data: r.data_iso,
+      descricao: r.descricao,
+      categoria: r.categoria_nome,
+      centro_custo: r.centro_custo_nome,
+      contraparte: r.contraparte_nome,
+      tipo: r.tipo,
+      status: r.status,
+      valor: Math.abs(Number(r.valor)),
+    }))
+}
+
+function buildBuData(
+  bu: BU,
+  rowsPeriodo: BaseRow[],
+  rowsM1: BaseRow[],
+  rowsEvolucao: BaseRow[],
+  windowYMs: string[],
+): BuData {
+  const kpis = calcKpisForBU(rowsPeriodo, bu)
+  const k1   = calcKpisForBU(rowsM1, bu)
+
+  kpis.delta_vs_m1 = {
+    receita_liquida_pct: k1.receita_liquida > 0
+      ? ((kpis.receita_liquida - k1.receita_liquida) / k1.receita_liquida) * 100
+      : null,
+    ebitda_pct: Math.abs(k1.ebitda) > 0
+      ? ((kpis.ebitda - k1.ebitda) / Math.abs(k1.ebitda)) * 100
+      : null,
+    margem_ebitda_pp: k1.receita_liquida > 0
+      ? kpis.margem_ebitda_pct - k1.margem_ebitda_pct
+      : null,
+  }
+
+  const tops = calcTops(rowsPeriodo, 5)
+
+  return {
+    bu,
+    kpis,
+    evolucao: calcEvolucao(rowsEvolucao, windowYMs),
+    top_despesas: tops.despesas,
+    top_receitas: tops.receitas,
+    lancamentos_recentes: pickLancamentos(rowsPeriodo, 10),
+  }
+}
+
+// COALESCE(data_competencia, data_vencimento) espelha o pattern do DRE em
+// app/api/financeiro/route.ts. Hoje sem_competencia = 0 nas duas tabelas
+// (verificado em prod 2026-06-20), mas mantemos o fallback por consistência
+// com o resto do projeto — se um lançamento entrar sem competência amanhã, a
+// /bus e a /dre comportam igual.
+const FETCH_SQL = `
+  WITH base AS (
+    SELECT
+      cr.id::text                                          AS id_lancamento,
+      'receber'::text                                      AS tipo_origem,
+      'Receita'::text                                      AS tipo,
+      cr.descricao                                         AS descricao,
+      COALESCE(cr.data_competencia, cr.data_vencimento)    AS data,
+      cr.total                                             AS valor,
+      cr.status                                            AS status,
+      COALESCE(cr.origem, '')                              AS origem,
+      cr.categoria_id                                      AS categoria_id,
+      cr.centro_custo_id                                   AS centro_custo_id,
+      cr.pessoa_id                                         AS pessoa_id
+    FROM ca.contas_receber cr
+    WHERE COALESCE(cr.data_competencia, cr.data_vencimento) BETWEEN $1::date AND $2::date
+      AND cr.status NOT IN ('Cancelado', 'Renegociado')
+      AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+
+    UNION ALL
+
+    SELECT
+      cp.id::text, 'pagar', 'Despesa', cp.descricao,
+      COALESCE(cp.data_competencia, cp.data_vencimento),
+      cp.total, cp.status, COALESCE(cp.origem, ''),
+      cp.categoria_id, cp.centro_custo_id, cp.pessoa_id
+    FROM ca.contas_pagar cp
+    WHERE COALESCE(cp.data_competencia, cp.data_vencimento) BETWEEN $1::date AND $2::date
+      AND cp.status NOT IN ('Cancelado', 'Renegociado')
+      AND COALESCE(cp.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+  )
+  SELECT
+    b.id_lancamento,
+    b.tipo_origem,
+    b.tipo,
+    b.descricao,
+    b.status,
+    b.origem,
+    b.valor,
+    TO_CHAR(b.data, 'YYYY-MM-DD')           AS data_iso,
+    TO_CHAR(b.data, 'YYYY-MM')              AS data_ym,
+    COALESCE(cat.nome, '')                  AS categoria_nome,
+    COALESCE(cc.nome,  '')                  AS centro_custo_nome,
+    COALESCE(p.nome,   '')                  AS contraparte_nome,
+    COALESCE(bu.bu, 'sem_categoria')        AS bu
+  FROM base b
+  LEFT JOIN ca.v_lancamento_bu bu
+    ON bu.id_lancamento::text = b.id_lancamento
+   AND bu.tipo_origem = b.tipo_origem
+  LEFT JOIN ca.categorias    cat ON cat.id = b.categoria_id
+  LEFT JOIN ca.centros_custo cc  ON cc.id  = b.centro_custo_id
+  LEFT JOIN ca.pessoas       p   ON p.id   = b.pessoa_id
+  WHERE COALESCE(cat.nome, '') NOT LIKE '(-)%'
+    AND COALESCE(cat.nome, '') NOT LIKE '(+)%'
+    AND COALESCE(cat.nome, '') NOT LIKE '(Não DRE)%'
+`
+
+export async function GET(request: Request) {
+  const denied = await requireScreen('bus')
+  if (denied) return denied
+
+  const { searchParams } = new URL(request.url)
+  const de  = searchParams.get('de')
+  const ate = searchParams.get('ate')
+
+  if (!de || !ate) {
+    return NextResponse.json({ error: 'parâmetros `de` e `ate` obrigatórios (YYYY-MM-DD)' }, { status: 400 })
+  }
+
+  // Janelas:
+  //   - Período atual (KPIs, tops, lançamentos recentes): [de..ate]
+  //   - M-1 (delta_vs_m1): mês cheio anterior a mes_referencia
+  //   - Evolução 6 meses: [M-5..M], mes inteiro
+  const mesRef    = ymOf(ate)
+  const m1Start   = shiftMonth(`${mesRef}-01`, -1)        // primeiro dia M-1
+  const m1End     = endOfMonth(ymOf(m1Start))             // último dia M-1
+  const evolStart = shiftMonth(`${mesRef}-01`, -5)        // primeiro dia M-5
+  const evolEnd   = endOfMonth(mesRef)                    // último dia M
+
+  const windowYMs: string[] = []
+  for (let i = 5; i >= 0; i--) windowYMs.push(ymOf(shiftMonth(`${mesRef}-01`, -i)))
+
+  try {
+    const client = await pool.connect()
+    try {
+      const t0 = Date.now()
+      const [periodoRes, m1Res, evolRes] = await Promise.all([
+        client.query<BaseRow>(FETCH_SQL, [de, ate]),
+        client.query<BaseRow>(FETCH_SQL, [m1Start, m1End]),
+        client.query<BaseRow>(FETCH_SQL, [evolStart, evolEnd]),
+      ])
+      const dbMs = Date.now() - t0
+
+      const byBuPeriodo = groupByBu(periodoRes.rows)
+      const byBuM1      = groupByBu(m1Res.rows)
+      const byBuEvol    = groupByBu(evolRes.rows)
+
+      const bus: BuData[] = []
+      // Operação e Receita sempre, mesmo zeradas
+      for (const bu of ['operacao', 'receita'] as const) {
+        bus.push(buildBuData(
+          bu,
+          byBuPeriodo.get(bu) ?? [],
+          byBuM1.get(bu) ?? [],
+          byBuEvol.get(bu) ?? [],
+          windowYMs,
+        ))
+      }
+      // Não Operacional e Sem Categoria só se houver no período
+      for (const bu of ['nao_operacional', 'sem_categoria'] as const) {
+        const rows = byBuPeriodo.get(bu) ?? []
+        if (rows.length === 0) continue
+        bus.push(buildBuData(
+          bu,
+          rows,
+          byBuM1.get(bu) ?? [],
+          byBuEvol.get(bu) ?? [],
+          windowYMs,
+        ))
+      }
+
+      const response: BusApiResponse = {
+        periodo: { de, ate, mes_referencia: mesRef },
+        bus,
+      }
+
+      return NextResponse.json(response, {
+        headers: { 'x-bus-db-ms': String(dbMs) },
+      })
+    } finally {
+      client.release()
+    }
+  } catch (err) {
+    console.error('[api/financeiro/bus]', err)
+    return NextResponse.json({ error: 'erro interno' }, { status: 500 })
+  }
+}
+
+function groupByBu(rows: BaseRow[]): Map<BU, BaseRow[]> {
+  const m = new Map<BU, BaseRow[]>()
+  for (const r of rows) {
+    const arr = m.get(r.bu) ?? []
+    arr.push(r)
+    m.set(r.bu, arr)
+  }
+  return m
+}
