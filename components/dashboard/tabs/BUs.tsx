@@ -5,9 +5,10 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import type { Filters } from '@/lib/types'
-import type { BU, BuData, BusApiResponse } from '@/lib/types/bus'
+import type { BU, BuData, BusApiResponse, KpiKey } from '@/lib/types/bus'
 import { fR, fDt, parseDataLocal } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Calculator, ArrowRight } from 'lucide-react'
 
 interface Props {
   filters: Filters
@@ -21,13 +22,11 @@ const BU_LABELS: Record<BU, string> = {
 }
 
 // KPIs clicáveis. O mapping → categoria_l1 espelha as fórmulas dos cards:
-//   Receita Líquida = receita bruta (1.x) − deduções (2.x)
+//   Receita Líquida = receita bruta (1.x) − deduções (2.x rateadas / sintéticas)
 //   Custos          = 3.x
 //   Margem Bruta    = RL − Custos  → tudo que entra em 1.x, 2.x, 3.x
 //   Despesas Op.    = 4.x
 //   EBITDA          = MB − Despesas Op.  → tudo que entra em 1.x..4.x
-type KpiKey = 'receita_liquida' | 'custos' | 'margem_bruta' | 'despesas_op' | 'ebitda' | 'nao_op'
-
 const KPI_TO_L1: Record<KpiKey, number[]> = {
   receita_liquida: [1, 2],
   custos:          [3],
@@ -110,12 +109,18 @@ function KpiCard({
 }
 
 // ── Painel da BU ────────────────────────────────────────────────────────────
-function PainelBu({ bu }: { bu: BuData }) {
+function PainelBu({
+  bu, kpiAtivo, setKpiAtivo, onNavegar,
+}: {
+  bu: BuData
+  kpiAtivo: KpiKey | null
+  setKpiAtivo: (k: KpiKey | null) => void
+  onNavegar: (target: { bu: BU; kpi: KpiKey }) => void
+}) {
   const { kpis } = bu
-  const [kpiAtivo, setKpiAtivo] = useState<KpiKey | null>(null)
 
   // Toggle: click no mesmo KPI ativo limpa o filtro.
-  const onKpi = (k: KpiKey) => setKpiAtivo(prev => prev === k ? null : k)
+  const onKpi = (k: KpiKey) => setKpiAtivo(kpiAtivo === k ? null : k)
 
   if (bu.bu === 'sem_categoria') {
     return (
@@ -133,7 +138,7 @@ function PainelBu({ bu }: { bu: BuData }) {
             antes de fechar o mês.
           </div>
         </div>
-        <LancamentosTabela bu={bu} kpiAtivo={null} onLimpar={() => {}} />
+        <LancamentosTabela bu={bu} kpiAtivo={null} onLimpar={() => {}} onNavegar={onNavegar} />
       </div>
     )
   }
@@ -158,7 +163,7 @@ function PainelBu({ bu }: { bu: BuData }) {
         </div>
         <EvolucaoChart bu={bu} />
         <TopCategorias bu={bu} />
-        <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} />
+        <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} onNavegar={onNavegar} />
       </div>
     )
   }
@@ -179,9 +184,11 @@ function PainelBu({ bu }: { bu: BuData }) {
                 {fPct(kpis.delta_vs_m1.receita_liquida_pct)} vs M-1
               </span>
               {/* Decomposição da líquida — sempre visível (mesmo se deduções=0) pra
-                  evitar assimetria visual entre BUs. Na Operação tipicamente RL = RB. */}
+                  evitar assimetria visual entre BUs. As deduções são rateadas:
+                  o lançamento físico vive em Operação, e cada BU recebe a parcela
+                  proporcional à sua receita bruta (`Rateio %`). */}
               <div className="mt-0.5" style={{ color: 'var(--ink3)' }}>
-                Bruta {fR(kpis.receita_bruta)} · Deduções {fR(kpis.deducoes)}
+                Bruta {fR(kpis.receita_bruta)} · Deduções {fR(kpis.deducoes)} · Rateio {(kpis.proporcao * 100).toFixed(1).replace('.', ',')}%
               </div>
             </>
           )}
@@ -228,7 +235,7 @@ function PainelBu({ bu }: { bu: BuData }) {
       </div>
       <EvolucaoChart bu={bu} />
       <TopCategorias bu={bu} />
-      <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} />
+      <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} onNavegar={onNavegar} />
     </div>
   )
 }
@@ -317,11 +324,12 @@ function ListaCategoria({ items, color }: { items: { categoria: string; valor: n
 const PAGE_SIZE = 50
 
 function LancamentosTabela({
-  bu, kpiAtivo, onLimpar,
+  bu, kpiAtivo, onLimpar, onNavegar,
 }: {
   bu: BuData
   kpiAtivo: KpiKey | null
   onLimpar: () => void
+  onNavegar: (target: { bu: BU; kpi: KpiKey }) => void
 }) {
   // Default (sem KPI): 10 mais recentes. Com KPI: tudo que bate o L1 set.
   const filtradas = useMemo(() => {
@@ -378,24 +386,56 @@ function LancamentosTabela({
                 </tr>
               </thead>
               <tbody>
-                {visiveis.map(l => (
-                  <tr key={l.id} style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(parseDataLocal(l.data))}</td>
-                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.descricao}>{l.descricao}</td>
-                    <td className="py-2 text-[11px]" style={{ color: l.contraparte ? 'var(--ink2)' : 'var(--ink3)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.contraparte || ''}>{l.contraparte || '—'}</td>
-                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.categoria}>{l.categoria}</td>
-                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.centro_custo}>{l.centro_custo}</td>
-                    <td
-                      className="py-2 pr-3 text-right text-[11px] font-semibold whitespace-nowrap"
-                      style={{
-                        color: l.tipo === 'Receita' ? 'var(--green)' : 'var(--red)',
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      {fR(l.valor)}
-                    </td>
-                  </tr>
-                ))}
+                {visiveis.map(l => {
+                  if (l._sintetica) {
+                    // Linha sintética: rateio de deduções cuja contraparte física
+                    // mora em outra BU. Fundo cinza claro, ícone, link de navegação.
+                    return (
+                      <tr key={l.id} style={{ borderBottom: '1px solid var(--line)', background: 'var(--surf2)' }}>
+                        <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>—</td>
+                        <td className="py-2 text-[11px]" colSpan={4} style={{ color: 'var(--ink2)' }}>
+                          <span className="inline-flex items-center gap-1.5">
+                            <Calculator size={12} style={{ color: 'var(--ink3)' }} />
+                            <span>{l.descricao}</span>
+                            {l.link_target && (
+                              <button
+                                onClick={() => onNavegar(l.link_target!)}
+                                className="ml-2 inline-flex items-center gap-1 text-[10px] underline"
+                                style={{ color: 'var(--brand)', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+                              >
+                                Ver lançamentos físicos <ArrowRight size={11} />
+                              </button>
+                            )}
+                          </span>
+                        </td>
+                        <td
+                          className="py-2 pr-3 text-right text-[11px] font-semibold whitespace-nowrap"
+                          style={{ color: 'var(--red)', fontVariantNumeric: 'tabular-nums' }}
+                        >
+                          −{fR(l.valor)}
+                        </td>
+                      </tr>
+                    )
+                  }
+                  return (
+                    <tr key={l.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                      <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(parseDataLocal(l.data))}</td>
+                      <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.descricao}>{l.descricao}</td>
+                      <td className="py-2 text-[11px]" style={{ color: l.contraparte ? 'var(--ink2)' : 'var(--ink3)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.contraparte || ''}>{l.contraparte || '—'}</td>
+                      <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.categoria}>{l.categoria}</td>
+                      <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.centro_custo}>{l.centro_custo}</td>
+                      <td
+                        className="py-2 pr-3 text-right text-[11px] font-semibold whitespace-nowrap"
+                        style={{
+                          color: l.tipo === 'Receita' ? 'var(--green)' : 'var(--red)',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        {fR(l.valor)}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
             {sobram > 0 && (
@@ -422,6 +462,22 @@ export function BUs({ filters }: Props) {
   const [loading, setLoading] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [activeSub, setActiveSub] = useState<BU>('operacao')
+  // Estado controlado do drill-down. Liftado para BUs pra suportar
+  // navegação cruzada (sintética → BU Operação com KPI RL ativo).
+  const [kpiAtivo, setKpiAtivo] = useState<KpiKey | null>(null)
+
+  // Sub-tab click: reset do KPI ativo (UX padrão).
+  const onTrocarSub = (next: BU) => {
+    setActiveSub(next)
+    setKpiAtivo(null)
+  }
+
+  // Navegação intencional (sintética → outra BU + KPI). Sub-tab e KPI
+  // mudam juntos sem o "reset por troca de sub-tab".
+  const onNavegar = (target: { bu: BU; kpi: KpiKey }) => {
+    setActiveSub(target.bu)
+    setKpiAtivo(target.kpi)
+  }
 
   const de  = filters.dateFrom
   const ate = filters.dateTo
@@ -469,7 +525,7 @@ export function BUs({ filters }: Props) {
           return (
             <button
               key={b.bu}
-              onClick={() => setActiveSub(b.bu)}
+              onClick={() => onTrocarSub(b.bu)}
               className="px-3 py-2 text-[12px] transition-all"
               style={{
                 color: isActive ? 'var(--ink)' : 'var(--ink3)',
@@ -487,8 +543,14 @@ export function BUs({ filters }: Props) {
         })}
       </div>
 
-      {/* key={bu} → remonta PainelBu ao trocar de sub-tab; reset natural do estado de drill-down */}
-      {active && <PainelBu key={active.bu} bu={active} />}
+      {active && (
+        <PainelBu
+          bu={active}
+          kpiAtivo={kpiAtivo}
+          setKpiAtivo={setKpiAtivo}
+          onNavegar={onNavegar}
+        />
+      )}
     </div>
   )
 }
