@@ -87,14 +87,67 @@ export async function GET(request: Request) {
     const client = await pool.connect()
     try {
       // ── 1. Saldos das contas ativas ───────────────────────────────────────
+      // Fórmula híbrida (auditoria em docs/auditoria-saldos-bancarios.md):
+      //   - CARTAO_CREDITO:    -Σ(parcelas vencidas em aberto)
+      //   - MEIOS_RECEBIMENTO: Σbaixas (RECEITA−DESPESA) + transf_in − transf_out
+      //   - demais tipos:      cf.saldo_atual (ETL persiste valor do CA, confiável p/ CC/Caixinha)
+      // O /v1/conta-financeira/{id}/saldo-atual da CA devolve saldo bruto não-conciliado
+      // para tipos passagem (MR) e dívida histórica para cartão; aplicar a fórmula aqui
+      // alinha o número com a tela do CA.
       const contasRes = await client.query<{
         id: string; nome: string; tipo: string; banco: string | null
-        saldo_atual: string; data_ultima_conciliacao: string | null
+        saldo: string; saldo_etl: string
+        data_ultima_conciliacao: string | null
+        synced_at: string | null
       }>(`
-        SELECT id, nome, tipo, banco, saldo_atual, data_ultima_conciliacao
-        FROM ca.contas_financeiras
-        WHERE ativo = true
-        ORDER BY saldo_atual DESC NULLS LAST, nome
+        WITH parcelas_vencidas_cartao AS (
+          SELECT pp.conta_financeira_id, SUM(cp.valor_aberto) AS valor_vencido
+          FROM ca.parcelas_pagar pp
+          JOIN ca.contas_pagar cp ON cp.id = pp.conta_pagar_id
+          WHERE pp.data_vencimento < CURRENT_DATE
+            AND cp.valor_aberto > 0
+            AND cp.status NOT IN ('Cancelado', 'Renegociado')
+          GROUP BY pp.conta_financeira_id
+        ),
+        movimentos_baixas AS (
+          SELECT conta_financeira_id,
+            SUM(CASE WHEN tipo = 'RECEITA' THEN valor ELSE 0 END) -
+            SUM(CASE WHEN tipo = 'DESPESA' THEN valor ELSE 0 END) AS movimento
+          FROM ca.baixas
+          WHERE conta_financeira_id IS NOT NULL
+          GROUP BY conta_financeira_id
+        ),
+        transf_in AS (
+          SELECT conta_destino_id AS conta_id, SUM(valor) AS valor_in
+          FROM ca.transferencias WHERE conta_destino_id IS NOT NULL
+          GROUP BY conta_destino_id
+        ),
+        transf_out AS (
+          SELECT conta_origem_id AS conta_id, SUM(valor) AS valor_out
+          FROM ca.transferencias WHERE conta_origem_id IS NOT NULL
+          GROUP BY conta_origem_id
+        )
+        SELECT
+          cf.id, cf.nome, cf.tipo, cf.banco,
+          cf.saldo_atual AS saldo_etl,
+          cf.data_ultima_conciliacao,
+          cf.synced_at,
+          CASE
+            WHEN cf.tipo = 'CARTAO_CREDITO' THEN
+              -COALESCE(pvc.valor_vencido, 0)
+            WHEN cf.tipo = 'MEIOS_RECEBIMENTO' THEN
+              COALESCE(mb.movimento, 0)
+              + COALESCE(ti.valor_in, 0)
+              - COALESCE(t_o.valor_out, 0)
+            ELSE COALESCE(cf.saldo_atual, 0)
+          END AS saldo
+        FROM ca.contas_financeiras cf
+        LEFT JOIN parcelas_vencidas_cartao pvc ON pvc.conta_financeira_id = cf.id
+        LEFT JOIN movimentos_baixas        mb  ON mb.conta_financeira_id  = cf.id
+        LEFT JOIN transf_in                ti  ON ti.conta_id             = cf.id
+        LEFT JOIN transf_out               t_o ON t_o.conta_id            = cf.id
+        WHERE cf.ativo = true
+        ORDER BY saldo DESC NULLS LAST, cf.nome
       `)
 
       // Projeção 30 dias (a_receber/a_pagar) foi movida para o widget Ponto de
@@ -319,14 +372,24 @@ export async function GET(request: Request) {
       }
 
       // ── Resposta ──────────────────────────────────────────────────────────
-      const contas = contasRes.rows.map(r => ({
-        id:   r.id,
-        nome: r.nome,
-        tipo: traduzirTipo(r.tipo),
-        banco: r.banco ?? null,
-        saldo: Number(r.saldo_atual) || 0,
-        dataUltimaConciliacao: r.data_ultima_conciliacao ?? null,
-      }))
+      const agora = Date.now()
+      const contas = contasRes.rows.map(r => {
+        const syncedAt = r.synced_at ?? null
+        const horasDesdeSync = syncedAt
+          ? Math.max(0, Math.round((agora - new Date(syncedAt).getTime()) / 3_600_000))
+          : null
+        return {
+          id:   r.id,
+          nome: r.nome,
+          tipo: traduzirTipo(r.tipo),
+          banco: r.banco ?? null,
+          saldo: Number(r.saldo) || 0,
+          saldoEtl: Number(r.saldo_etl) || 0,
+          dataUltimaConciliacao: r.data_ultima_conciliacao ?? null,
+          syncedAt,
+          horasDesdeSync,
+        }
+      })
 
       return NextResponse.json({
         saldos: {
