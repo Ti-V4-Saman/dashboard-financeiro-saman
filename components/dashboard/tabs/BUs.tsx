@@ -20,6 +20,32 @@ const BU_LABELS: Record<BU, string> = {
   sem_categoria:   'Sem Categoria',
 }
 
+// KPIs clicáveis. O mapping → categoria_l1 espelha as fórmulas dos cards:
+//   Receita Líquida = receita bruta (1.x) − deduções (2.x)
+//   Custos          = 3.x
+//   Margem Bruta    = RL − Custos  → tudo que entra em 1.x, 2.x, 3.x
+//   Despesas Op.    = 4.x
+//   EBITDA          = MB − Despesas Op.  → tudo que entra em 1.x..4.x
+type KpiKey = 'receita_liquida' | 'custos' | 'margem_bruta' | 'despesas_op' | 'ebitda' | 'nao_op'
+
+const KPI_TO_L1: Record<KpiKey, number[]> = {
+  receita_liquida: [1, 2],
+  custos:          [3],
+  margem_bruta:    [1, 2, 3],
+  despesas_op:     [4],
+  ebitda:          [1, 2, 3, 4],
+  nao_op:          [5, 6, 7],
+}
+
+const KPI_LABEL: Record<KpiKey, string> = {
+  receita_liquida: 'Receita Líquida',
+  custos:          'Custos',
+  margem_bruta:    'Margem Bruta',
+  despesas_op:     'Despesas Op.',
+  ebitda:          'EBITDA',
+  nao_op:          'Resultado Não Operacional',
+}
+
 const MES_CURTO = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
                        'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 function ymShort(ym: string): string {
@@ -42,24 +68,39 @@ function deltaColor(v: number | null, invert = false): string {
 
 // ── KPI Card ────────────────────────────────────────────────────────────────
 function KpiCard({
-  label, value, sub, color,
+  label, value, sub, color, onClick, active,
 }: {
   label: string
   value: string
   sub?: React.ReactNode
   color?: string
+  onClick?: () => void
+  active?: boolean
 }) {
+  const accent = color ?? 'var(--ink)'
+  const clickable = !!onClick
   return (
     <div
-      className="rounded-lg p-4"
-      style={{ background: 'var(--surface)', border: '1px solid var(--line)' }}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick?.() } } : undefined}
+      className="rounded-lg p-4 transition-shadow"
+      style={{
+        background: active ? 'color-mix(in srgb, var(--surface) 94%, transparent)' : 'var(--surface)',
+        border: active ? `2px solid ${accent}` : '1px solid var(--line)',
+        padding: active ? 15 : 16,  // compensa o +1px de border pra não pular layout
+        cursor: clickable ? 'pointer' : 'default',
+        outline: 'none',
+        userSelect: clickable ? 'none' : 'auto',
+      }}
     >
       <div className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--ink3)' }}>
         {label}
       </div>
       <div
         className="text-[18px] font-bold leading-none tracking-tight"
-        style={{ color: color ?? 'var(--ink)', fontVariantNumeric: 'tabular-nums' }}
+        style={{ color: accent, fontVariantNumeric: 'tabular-nums' }}
       >
         {value}
       </div>
@@ -71,6 +112,10 @@ function KpiCard({
 // ── Painel da BU ────────────────────────────────────────────────────────────
 function PainelBu({ bu }: { bu: BuData }) {
   const { kpis } = bu
+  const [kpiAtivo, setKpiAtivo] = useState<KpiKey | null>(null)
+
+  // Toggle: click no mesmo KPI ativo limpa o filtro.
+  const onKpi = (k: KpiKey) => setKpiAtivo(prev => prev === k ? null : k)
 
   if (bu.bu === 'sem_categoria') {
     return (
@@ -88,29 +133,32 @@ function PainelBu({ bu }: { bu: BuData }) {
             antes de fechar o mês.
           </div>
         </div>
-        <LancamentosRecentes bu={bu} />
+        <LancamentosTabela bu={bu} kpiAtivo={null} onLimpar={() => {}} />
       </div>
     )
   }
 
   if (bu.bu === 'nao_operacional') {
+    const accent = kpis.nao_operacional_total >= 0 ? 'var(--green)' : 'var(--red)'
     return (
       <div className="space-y-4">
         <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
           <KpiCard
             label="Resultado Não Operacional"
             value={fR(kpis.nao_operacional_total)}
-            color={kpis.nao_operacional_total >= 0 ? 'var(--green)' : 'var(--red)'}
+            color={accent}
+            onClick={() => onKpi('nao_op')}
+            active={kpiAtivo === 'nao_op'}
           />
           <KpiCard label="Lançamentos no período" value={kpis.qtd_lancamentos.toLocaleString('pt-BR')} />
         </div>
         <div className="text-[11px] px-1" style={{ color: 'var(--ink3)' }}>
           Resultado líquido das categorias 5 (depreciação), 6 (financeiras) e 7
-          (impostos s/ lucro). Detalhes nas tabelas abaixo.
+          (impostos s/ lucro). Clique no card para listar todos os lançamentos.
         </div>
         <EvolucaoChart bu={bu} />
         <TopCategorias bu={bu} />
-        <LancamentosRecentes bu={bu} />
+        <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} />
       </div>
     )
   }
@@ -123,6 +171,8 @@ function PainelBu({ bu }: { bu: BuData }) {
           label="Receita Líquida"
           value={fR(kpis.receita_liquida)}
           color="var(--green)"
+          onClick={() => onKpi('receita_liquida')}
+          active={kpiAtivo === 'receita_liquida'}
           sub={(
             <>
               <span style={{ color: deltaColor(kpis.delta_vs_m1.receita_liquida_pct) }}>
@@ -140,24 +190,32 @@ function PainelBu({ bu }: { bu: BuData }) {
           label="Custos"
           value={fR(kpis.custos)}
           color="var(--red)"
+          onClick={() => onKpi('custos')}
+          active={kpiAtivo === 'custos'}
           sub={<span style={{ color: 'var(--ink3)' }}>cat 3.x</span>}
         />
         <KpiCard
           label="Margem Bruta"
           value={fR(kpis.margem_bruta)}
           color={kpis.margem_bruta >= 0 ? 'var(--green)' : 'var(--red)'}
+          onClick={() => onKpi('margem_bruta')}
+          active={kpiAtivo === 'margem_bruta'}
           sub={<span style={{ color: 'var(--ink3)' }}>RL − Custos</span>}
         />
         <KpiCard
           label="Despesas Op."
           value={fR(kpis.despesas_op)}
           color="var(--red)"
+          onClick={() => onKpi('despesas_op')}
+          active={kpiAtivo === 'despesas_op'}
           sub={<span style={{ color: 'var(--ink3)' }}>cat 4.x</span>}
         />
         <KpiCard
           label="EBITDA"
           value={fR(kpis.ebitda)}
           color={kpis.ebitda >= 0 ? 'var(--green)' : 'var(--red)'}
+          onClick={() => onKpi('ebitda')}
+          active={kpiAtivo === 'ebitda'}
           sub={(
             <>
               <span style={{ color: 'var(--ink3)' }}>{kpis.margem_ebitda_pct.toFixed(1).replace('.', ',')}% margem · </span>
@@ -170,7 +228,7 @@ function PainelBu({ bu }: { bu: BuData }) {
       </div>
       <EvolucaoChart bu={bu} />
       <TopCategorias bu={bu} />
-      <LancamentosRecentes bu={bu} />
+      <LancamentosTabela bu={bu} kpiAtivo={kpiAtivo} onLimpar={() => setKpiAtivo(null)} />
     </div>
   )
 }
@@ -255,15 +313,59 @@ function ListaCategoria({ items, color }: { items: { categoria: string; valor: n
   )
 }
 
-// ── Lançamentos Recentes ────────────────────────────────────────────────────
-function LancamentosRecentes({ bu }: { bu: BuData }) {
+// ── Lançamentos (tabela com drill-down de KPI) ──────────────────────────────
+const PAGE_SIZE = 50
+
+function LancamentosTabela({
+  bu, kpiAtivo, onLimpar,
+}: {
+  bu: BuData
+  kpiAtivo: KpiKey | null
+  onLimpar: () => void
+}) {
+  // Default (sem KPI): 10 mais recentes. Com KPI: tudo que bate o L1 set.
+  const filtradas = useMemo(() => {
+    if (!kpiAtivo) return bu.lancamentos.slice(0, 10)
+    const allow = new Set(KPI_TO_L1[kpiAtivo])
+    return bu.lancamentos.filter(l => allow.has(l.categoria_l1))
+  }, [bu.lancamentos, kpiAtivo])
+
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  // Reset paginação ao trocar de KPI
+  useEffect(() => { setPageSize(PAGE_SIZE) }, [kpiAtivo])
+
+  const visiveis = kpiAtivo ? filtradas.slice(0, pageSize) : filtradas
+  const sobram   = kpiAtivo ? Math.max(0, filtradas.length - pageSize) : 0
+
+  const tituloDefault = bu.bu === 'sem_categoria' ? 'Lançamentos' : 'Lançamentos recentes'
+
   return (
     <Card>
-      <CardHeader><CardTitle className="text-[13px]">Lançamentos recentes</CardTitle></CardHeader>
+      <CardHeader>
+        <CardTitle className="text-[13px]">{kpiAtivo ? 'Lançamentos por KPI' : tituloDefault}</CardTitle>
+      </CardHeader>
       <CardContent>
-        {bu.lancamentos.length === 0
-          ? <div className="text-[11px]" style={{ color: 'var(--ink3)' }}>Sem lançamentos no período.</div>
+        {kpiAtivo && (
+          <div
+            className="mb-3 flex items-center justify-between rounded-md px-3 py-2"
+            style={{ background: 'var(--surf2)', border: '1px solid var(--line)' }}
+          >
+            <div className="text-[11px]" style={{ color: 'var(--ink2)' }}>
+              Mostrando: <strong>{KPI_LABEL[kpiAtivo]}</strong> · {filtradas.length.toLocaleString('pt-BR')} lançamento{filtradas.length === 1 ? '' : 's'}
+            </div>
+            <button
+              onClick={onLimpar}
+              className="text-[11px] px-2 py-1 rounded transition-colors"
+              style={{ color: 'var(--ink3)', background: 'transparent', border: '1px solid var(--line)', cursor: 'pointer' }}
+            >
+              ✕ Limpar
+            </button>
+          </div>
+        )}
+        {visiveis.length === 0
+          ? <div className="text-[11px]" style={{ color: 'var(--ink3)' }}>Sem lançamentos.</div>
           : (
+            <>
             <table className="w-full">
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--line)' }}>
@@ -276,7 +378,7 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
                 </tr>
               </thead>
               <tbody>
-                {bu.lancamentos.slice(0, 10).map(l => (
+                {visiveis.map(l => (
                   <tr key={l.id} style={{ borderBottom: '1px solid var(--line)' }}>
                     <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(parseDataLocal(l.data))}</td>
                     <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.descricao}>{l.descricao}</td>
@@ -296,6 +398,18 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
                 ))}
               </tbody>
             </table>
+            {sobram > 0 && (
+              <div className="mt-3 flex justify-center">
+                <button
+                  onClick={() => setPageSize(p => p + PAGE_SIZE)}
+                  className="text-[11px] px-3 py-1.5 rounded transition-colors"
+                  style={{ color: 'var(--ink2)', background: 'var(--surface)', border: '1px solid var(--line)', cursor: 'pointer' }}
+                >
+                  Carregar mais ({sobram.toLocaleString('pt-BR')} restantes)
+                </button>
+              </div>
+            )}
+            </>
           )}
       </CardContent>
     </Card>
@@ -373,7 +487,8 @@ export function BUs({ filters }: Props) {
         })}
       </div>
 
-      {active && <PainelBu bu={active} />}
+      {/* key={bu} → remonta PainelBu ao trocar de sub-tab; reset natural do estado de drill-down */}
+      {active && <PainelBu key={active.bu} bu={active} />}
     </div>
   )
 }
