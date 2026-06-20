@@ -307,6 +307,17 @@ function buildBuData(
 // (verificado em prod 2026-06-20), mas mantemos o fallback por consistência
 // com o resto do projeto — se um lançamento entrar sem competência amanhã, a
 // /bus e a /dre comportam igual.
+// Parâmetros do FETCH_SQL:
+//   $1 date   — de
+//   $2 date   — ate
+//   $3 text   — tipo ('Receita' | 'Despesa' | NULL = ambos)
+//   $4 text[] — situacao (NULL = todos)
+//   $5 text[] — categoria por nome (NULL = todas)
+//   $6 text[] — centro de custo por nome (NULL = todos)
+//   $7 text[] — conta financeira por nome (NULL = todas)
+//
+// Convenção: $N::tipo[] IS NULL pula o filtro inteiro (nenhuma seleção no
+// FilterBar = sem restrição). text vazio em $3 também não restringe.
 const FETCH_SQL = `
   WITH base AS (
     SELECT
@@ -320,11 +331,15 @@ const FETCH_SQL = `
       COALESCE(cr.origem, '')                              AS origem,
       cr.categoria_id                                      AS categoria_id,
       cr.centro_custo_id                                   AS centro_custo_id,
+      cr.conta_financeira_id                               AS conta_financeira_id,
       cr.pessoa_id                                         AS pessoa_id
     FROM ca.contas_receber cr
     WHERE COALESCE(cr.data_competencia, cr.data_vencimento) BETWEEN $1::date AND $2::date
       AND cr.status NOT IN ('Cancelado', 'Renegociado')
       AND COALESCE(cr.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+      -- tipo: se $3 = 'Despesa', exclui receber inteiramente
+      AND ($3::text IS NULL OR $3::text = '' OR $3::text = 'Receita')
+      AND ($4::text[] IS NULL OR cr.status = ANY($4::text[]))
 
     UNION ALL
 
@@ -332,11 +347,13 @@ const FETCH_SQL = `
       cp.id::text, 'pagar', 'Despesa', cp.descricao,
       COALESCE(cp.data_competencia, cp.data_vencimento),
       cp.total, cp.status, COALESCE(cp.origem, ''),
-      cp.categoria_id, cp.centro_custo_id, cp.pessoa_id
+      cp.categoria_id, cp.centro_custo_id, cp.conta_financeira_id, cp.pessoa_id
     FROM ca.contas_pagar cp
     WHERE COALESCE(cp.data_competencia, cp.data_vencimento) BETWEEN $1::date AND $2::date
       AND cp.status NOT IN ('Cancelado', 'Renegociado')
       AND COALESCE(cp.origem, '') NOT IN ('TRANSFERENCIA', 'SALDO_CONTA_BANCARIA')
+      AND ($3::text IS NULL OR $3::text = '' OR $3::text = 'Despesa')
+      AND ($4::text[] IS NULL OR cp.status = ANY($4::text[]))
   )
   SELECT
     b.id_lancamento,
@@ -356,12 +373,16 @@ const FETCH_SQL = `
   LEFT JOIN ca.v_lancamento_bu bu
     ON bu.id_lancamento::text = b.id_lancamento
    AND bu.tipo_origem = b.tipo_origem
-  LEFT JOIN ca.categorias    cat ON cat.id = b.categoria_id
-  LEFT JOIN ca.centros_custo cc  ON cc.id  = b.centro_custo_id
-  LEFT JOIN ca.pessoas       p   ON p.id   = b.pessoa_id
+  LEFT JOIN ca.categorias        cat ON cat.id = b.categoria_id
+  LEFT JOIN ca.centros_custo     cc  ON cc.id  = b.centro_custo_id
+  LEFT JOIN ca.contas_financeiras cf  ON cf.id  = b.conta_financeira_id
+  LEFT JOIN ca.pessoas           p   ON p.id   = b.pessoa_id
   WHERE COALESCE(cat.nome, '') NOT LIKE '(-)%'
     AND COALESCE(cat.nome, '') NOT LIKE '(+)%'
     AND COALESCE(cat.nome, '') NOT LIKE '(Não DRE)%'
+    AND ($5::text[] IS NULL OR cat.nome = ANY($5::text[]))
+    AND ($6::text[] IS NULL OR cc.nome  = ANY($6::text[]))
+    AND ($7::text[] IS NULL OR cf.nome  = ANY($7::text[]))
 `
 
 export async function GET(request: Request) {
@@ -375,6 +396,16 @@ export async function GET(request: Request) {
   if (!de || !ate) {
     return NextResponse.json({ error: 'parâmetros `de` e `ate` obrigatórios (YYYY-MM-DD)' }, { status: 400 })
   }
+
+  // Filtros do FilterBar global. Convenção: ausência (NULL) = sem restrição.
+  // Pra arrays vazios também passamos NULL — o SQL pula o filtro.
+  const tipoParam = searchParams.get('tipo')
+  const tipo: string | null = tipoParam && (tipoParam === 'Receita' || tipoParam === 'Despesa') ? tipoParam : null
+  const arrOrNull = (vs: string[]): string[] | null => vs.length > 0 ? vs : null
+  const situacao  = arrOrNull(searchParams.getAll('situacao'))
+  const categoria = arrOrNull(searchParams.getAll('categoria'))
+  const cc        = arrOrNull(searchParams.getAll('cc'))
+  const conta     = arrOrNull(searchParams.getAll('conta'))
 
   // Janelas:
   //   - Período atual (KPIs, tops, lançamentos recentes): [de..ate]
@@ -393,10 +424,14 @@ export async function GET(request: Request) {
     const client = await pool.connect()
     try {
       const t0 = Date.now()
+      // Filtros do FilterBar (tipo/situacao/categoria/cc/conta) aplicados
+      // identicamente nas 3 janelas — período corrente, M-1 e evolução —
+      // pra manter consistência entre KPIs, delta_vs_m1 e o chart.
+      const filterArgs = [tipo, situacao, categoria, cc, conta] as const
       const [periodoRes, m1Res, evolRes] = await Promise.all([
-        client.query<BaseRow>(FETCH_SQL, [de, ate]),
-        client.query<BaseRow>(FETCH_SQL, [m1Start, m1End]),
-        client.query<BaseRow>(FETCH_SQL, [evolStart, evolEnd]),
+        client.query<BaseRow>(FETCH_SQL, [de,        ate,    ...filterArgs]),
+        client.query<BaseRow>(FETCH_SQL, [m1Start,   m1End,  ...filterArgs]),
+        client.query<BaseRow>(FETCH_SQL, [evolStart, evolEnd, ...filterArgs]),
       ])
       const dbMs = Date.now() - t0
 
