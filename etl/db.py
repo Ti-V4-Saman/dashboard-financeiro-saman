@@ -115,10 +115,12 @@ def upsert(
         try:
             psycopg2.extras.execute_batch(cur, sql, tuples, page_size=500)
         except Exception as e:
-            logger.error(f"UPSERT ERROR in table {table}: {e}")
-            # Log the first tuple to help debug data issues
-            if tuples:
-                logger.error(f"First tuple in failed batch: {tuples[0]}")
+            # Não logamos o conteúdo das tuplas: podem conter PII (CPF/CNPJ,
+            # nome, e-mail de ca.pessoas) e dados financeiros. Só metadados.
+            logger.error(
+                f"UPSERT ERROR in table {table}: {e} "
+                f"(batch={len(tuples)} linhas, colunas={columns})"
+            )
             raise
 
     return len(rows)

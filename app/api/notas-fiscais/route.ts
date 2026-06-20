@@ -12,14 +12,12 @@
  *   - "Emitida/Cancelada/Falha" = NFs com data_emissao no período
  */
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
 
 export const dynamic = 'force-dynamic'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 export interface NotaRow {
   id: string                                          // id NF, ou venda_id quando sem NF
@@ -52,6 +50,8 @@ interface Summary {
 }
 
 export async function GET(request: Request) {
+  const denied = await requireScreen('notas_fiscais')
+  if (denied) return denied
   try {
     const { searchParams } = new URL(request.url)
     const de     = searchParams.get('de')     || null

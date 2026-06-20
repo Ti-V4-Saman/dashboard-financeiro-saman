@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-})
+const pool = getPool()
 
 export async function GET() {
+  const denied = await requireScreen('qualidade_insights')
+  if (denied) return denied
   try {
     const client = await pool.connect()
     try {

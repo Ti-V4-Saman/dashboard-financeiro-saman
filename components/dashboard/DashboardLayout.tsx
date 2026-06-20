@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSession } from 'next-auth/react'
 import { TopBar } from './TopBar'
 import { FilterBar } from './FilterBar'
@@ -14,6 +14,8 @@ import { Lancamentos } from './tabs/Lancamentos'
 import { MetasTab } from './tabs/Metas'
 import { NotasFiscais } from './tabs/NotasFiscais'
 import { UsuariosTab } from './tabs/Usuarios'
+import { BlockScreen } from './BlockScreen'
+import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN, SCREEN_TO_TAB } from '@/lib/screens'
 import type { Lancamento, Filters } from '@/lib/types'
 
 interface DashboardLayoutProps {
@@ -40,10 +42,31 @@ export function DashboardLayout({
   listaContas,
 }: DashboardLayoutProps) {
   const [activeTab, setActiveTab] = useState<Tab>('visao')
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const isAdmin =
     process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === 'true' ||
     (session?.user as { isAdmin?: boolean })?.isAdmin === true
+
+  const sessionLoading = status === 'loading'
+
+  // Telas que o usuário pode ver. Admin → todas. Vem DB-fresh via callback session.
+  const allowedScreens = useMemo(
+    () =>
+      isAdmin
+        ? [...ALL_SCREENS]
+        : sanitizeScreens((session?.user as { telasPermitidas?: string[] })?.telasPermitidas),
+    [isAdmin, session],
+  )
+
+  const activeSlug = TAB_TO_SCREEN[activeTab]
+  const canSeeActive = isAdmin || allowedScreens.includes(activeSlug)
+
+  // Se a aba ativa não é permitida, leva para a primeira tela liberada (quando há).
+  useEffect(() => {
+    if (sessionLoading || isAdmin || canSeeActive) return
+    const primeira = allowedScreens.find(s => s !== 'acesso') ?? allowedScreens[0]
+    if (primeira) setActiveTab(SCREEN_TO_TAB[primeira] as Tab)
+  }, [sessionLoading, isAdmin, canSeeActive, allowedScreens])
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
@@ -55,10 +78,10 @@ export function DashboardLayout({
         allData={allData}
         listaContas={listaContas}
       />
-      <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} />
+      <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} allowedScreens={allowedScreens} />
 
       <main className="px-6 py-5 w-full">
-        {isLoading ? (
+        {(isLoading || sessionLoading) ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <div
               className="w-40 h-0.5 rounded overflow-hidden"
@@ -83,6 +106,8 @@ export function DashboardLayout({
               }
             `}</style>
           </div>
+        ) : !canSeeActive ? (
+          <BlockScreen allowedScreens={allowedScreens} onNavigate={(t) => setActiveTab(t as Tab)} />
         ) : (
           // Opacity sutil durante refetch server-side (troca de período / regime)
           <div
@@ -93,13 +118,17 @@ export function DashboardLayout({
               pointerEvents: isRefetching ? 'none' : 'auto',
             }}
           >
+            {/* TODO Fase 2: telas ACOPLADAS (visao/dre/cc/comparativo/lancamentos)
+                ainda recebem o array BRUTO via /api/financeiro (prop filteredData/
+                allData). Esconder-aba + bloqueio aqui é só UI — o dado bruto ainda
+                desce. A proteção server-side real (agregação por permissão) é Fase 2. */}
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
             {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
-            {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} />}
+            {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
           </div>

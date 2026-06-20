@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { getPool } from '@/lib/db'
+import { requireAdmin } from '@/lib/auth-guard'
+import { requireScreen } from '@/lib/access'
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-})
+const pool = getPool()
 
-// GET: Listar todas as metas
+// GET: Listar todas as metas (leitura: quem tem a tela 'metas')
 export async function GET() {
+  const denied = await requireScreen('metas')
+  if (denied) return denied
   try {
     const { rows } = await pool.query('SELECT * FROM ca.metas ORDER BY mes_referencia DESC, categoria ASC')
     return NextResponse.json(rows)
@@ -19,6 +20,8 @@ export async function GET() {
 
 // POST: Criar ou atualizar uma meta (Upsert)
 export async function POST(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const body = await req.json()
     const { 
@@ -63,6 +66,8 @@ export async function POST(req: Request) {
 
 // DELETE: Excluir uma meta
 export async function DELETE(req: Request) {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const { searchParams } = new URL(req.url)
     const id = searchParams.get('id')

@@ -5,6 +5,7 @@
  * Segurança: o duplo guard (NODE_ENV + flag) garante que nunca dispara em produção,
  * pois a Vercel sempre define NODE_ENV=production.
  */
+import { ALL_SCREENS } from '@/lib/screens'
 
 export function isDevBypassEnabled(): boolean {
   return (
@@ -22,6 +23,8 @@ export function getDevBypassSession() {
       name: process.env.DEV_USER_NAME || 'Dev Local',
       image: null,
       isAdmin: true,
+      // Dev bypass enxerga todas as telas (espelha isAdmin).
+      telasPermitidas: [...ALL_SCREENS],
     },
     expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   }

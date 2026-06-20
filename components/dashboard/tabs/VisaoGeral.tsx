@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
+import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR, fDt } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
@@ -78,18 +79,10 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data, filters }: Props) {
-  // ── Base dos KPIs e gráficos ─────────────────────────────────────────────
-  // Caixa  → só Quitado (cada linha é uma BAIXA — pagamento efetivo)
-  // Competência → todos os status válidos (Quitado + Aberto + Atrasado + Parcial)
-  //               porque a receita é reconhecida na competência, não no pagamento
-  const op = useMemo(() => {
-    const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
-    return data.filter(r => {
-      if (r.isTransfer) return false
-      if (isCaixa) return r.situacao === 'Quitado'
-      return r.situacao !== 'Cancelado' && r.situacao !== 'Renegociado'
-    })
-  }, [data, filters?.regime])
+  const op = useMemo(
+    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
+    [data, filters?.regime]
+  )
 
   const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
     let rec = 0, desp = 0, atr = 0
@@ -182,14 +175,18 @@ export function VisaoGeral({ data, filters }: Props) {
       .catch(() => setLoading(false))
   }, [filters?.dateFrom, filters?.dateTo, filters?.regime])
 
+  // Em caixa, os KPIs grandes refletem "o que movimentou ou deveria movimentar
+  // no mês" (Quitado + Aberto + Atrasado). O sufixo "Provisionado" deixa claro
+  // que o valor inclui esperado, e não só o dinheiro que efetivamente entrou/saiu.
+  const isCaixa = (filters?.regime ?? 'competencia') === 'caixa'
+
   return (
     <div className="space-y-4">
-      {/* KPI Row — inalterado */}
       <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))' }}>
-        <KpiCard label="Receita Bruta" value={fR(receita)} color="var(--green)" />
-        <KpiCard label="Despesas"      value={fR(despesa)} color="var(--red)" />
+        <KpiCard label={isCaixa ? 'Receita Provisionada' : 'Receita Bruta'} value={fR(receita)} color="var(--green)" />
+        <KpiCard label={isCaixa ? 'Despesa Provisionada' : 'Despesas'}      value={fR(despesa)} color="var(--red)" />
         <KpiCard
-          label="Resultado"
+          label={isCaixa ? 'Resultado Provisionado' : 'Resultado'}
           value={fR(resultado)}
           color={resultado >= 0 ? 'var(--green)' : 'var(--red)'}
         />
@@ -211,11 +208,20 @@ export function VisaoGeral({ data, filters }: Props) {
         />
       </div>
 
-      {/* Linha 1: Gráfico de barras + Insights (esq) | Saldos Bancários (dir) */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) 400px', alignItems: 'start' }}>
-
-        {/* Card esquerdo: Receitas vs Despesas + InsightsPeriodo */}
-        <Card>
+      {/* Linha 1+2 combinadas em grid 2-col:
+            Esquerda (1fr): Chart+Insights (row 1) + Contratos|NFs (row 2)
+            Direita (420px): Saldos Bancários ocupando AS DUAS linhas
+                             (sidebar alta, alinhada com o bottom da coluna esq) */}
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: 'minmax(0, 1fr) 460px',
+          gridTemplateRows: 'auto auto',
+          alignItems: 'stretch',
+        }}
+      >
+        {/* Coluna esquerda — Row 1: Receitas vs Despesas + InsightsPeriodo */}
+        <Card style={{ gridColumn: 1, gridRow: 1 }}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -236,7 +242,7 @@ export function VisaoGeral({ data, filters }: Props) {
             </div>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={260}>
               <BarChart data={dailyData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <XAxis
                   dataKey="data"
@@ -277,20 +283,24 @@ export function VisaoGeral({ data, filters }: Props) {
           </CardContent>
         </Card>
 
-        {/* Card direito: Saldos Bancários */}
-        <SaldosBancarios
-          data={extras?.saldos ?? null}
-          loading={extrasLoading}
-        />
+        {/* Coluna esquerda — Row 2: blocos de resumo (Contratos + Notas Fiscais) */}
+        <div style={{ gridColumn: 1, gridRow: 2 }}>
+          <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
+        </div>
+
+        {/* Coluna direita — span 2 rows: Saldos Bancários (sidebar) */}
+        <div style={{ gridColumn: 2, gridRow: '1 / span 2' }}>
+          <SaldosBancarios
+            data={extras?.saldos ?? null}
+            loading={extrasLoading}
+          />
+        </div>
       </div>
 
-      {/* Linha 2: Resumo Trimestral — Competência (3 cards: M, M+1, M+2) */}
+      {/* Linha 3: Resumo Trimestral — Projeção de Caixa (3 cards: M, M+1, M+2) */}
       {filters && (
         <ResumoTrimestralWidget filters={filters} />
       )}
-
-      {/* Linha 3: blocos de resumo (Contratos + Notas Fiscais) */}
-      <BlocosResumo blocos={extras?.blocos ?? null} loading={extrasLoading} />
 
       {/* Linha 3: Top 10 */}
       <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)' }}>
