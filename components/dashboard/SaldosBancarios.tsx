@@ -9,6 +9,7 @@ export interface ContaSaldo {
   id: string
   nome: string
   tipo: string
+  tipoRaw?: string
   banco: string | null
   saldo: number
   saldoEtl?: number
@@ -20,6 +21,9 @@ export interface ContaSaldo {
 export interface SaldosData {
   contas: ContaSaldo[]
   consolidado: number
+  disponivel?: number
+  dividaCartao?: number
+  posicaoLiquida?: number
 }
 
 interface Props {
@@ -98,6 +102,42 @@ export function SaldosBancarios({ data, loading }: Props) {
 
       {/* flex-1 faz o conteudo expandir; consolidado vai pro bottom com mt-auto */}
       <CardContent className="gap-0 pt-0 flex-1 flex flex-col">
+        {/* KPIs (Disponível / Dívida Cartão / Posição Líquida) */}
+        <div
+          className="grid grid-cols-3 gap-1.5 mb-2 pb-2"
+          style={{ borderBottom: '0.5px solid var(--line)' }}
+        >
+          {([
+            { label: 'Disponível',      value: data?.disponivel ?? null,     forceCor: 'pos' as const },
+            { label: 'Dívida cartão',   value: data?.dividaCartao ?? null,   forceCor: 'neg' as const },
+            { label: 'Posição líquida', value: data?.posicaoLiquida ?? null, forceCor: null },
+          ]).map(k => {
+            const cor =
+              k.value == null         ? 'var(--ink3)' :
+              k.forceCor === 'pos'    ? '#1D9E75' :
+              k.forceCor === 'neg'    ? (k.value < 0 ? '#E24B4A' : 'var(--ink3)') :
+              saldoCor(k.value)
+            return (
+              <div
+                key={k.label}
+                className="rounded px-1.5 py-1"
+                style={{ background: 'var(--surf2)' }}
+              >
+                <div className="text-[9px] uppercase tracking-wide" style={{ color: 'var(--ink4)' }}>
+                  {k.label}
+                </div>
+                {loading || !data || k.value == null ? (
+                  <Skeleton h={13} w="80%" />
+                ) : (
+                  <div className="text-[12px] font-semibold leading-tight" style={{ color: cor }}>
+                    {fR(k.value)}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
         {/* Lista de contas */}
         <div>
           {loading || !data ? (
