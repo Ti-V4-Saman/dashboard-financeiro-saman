@@ -73,13 +73,57 @@ function l1Prefix(nome: string): number {
 
 function zeroKpis(): BuKpis {
   return {
-    receita_bruta: 0, deducoes: 0, receita_liquida: 0,
+    receita_bruta: 0, deducoes: 0, proporcao: 0, receita_liquida: 0,
     custos: 0, margem_bruta: 0, despesas_op: 0, ebitda: 0,
     margem_ebitda_pct: 0,
     nao_operacional_total: 0,
     qtd_lancamentos: 0, total_bruto: 0,
     delta_vs_m1: { receita_liquida_pct: null, ebitda_pct: null, margem_ebitda_pp: null },
   }
+}
+
+function round2(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
+/**
+ * Aplica rateio das deduções entre Operação e Receita in-place sobre os KPIs
+ * já calculados de cada BU. Garante soma exata (Op + Receita ≡ totalDeducoes)
+ * dando o complemento à Receita pra não perder centavo no arredondamento.
+ *
+ * Pré-condição: calcKpisForBU já rodou em ambos. Após 0005, as cat 2.x
+ * físicas caem todas em Operação, então kpisOp.deducoes carrega o total
+ * antes do rateio — usamos isso como `totalDeducoes`.
+ */
+function aplicaRateio(kpisOp: BuKpis, kpisReceita: BuKpis): number {
+  const totalDeducoes = kpisOp.deducoes  // pós-0005: tudo cai em Operação
+  const totalBruta    = kpisOp.receita_bruta + kpisReceita.receita_bruta
+
+  if (totalBruta <= 0) {
+    // Sem receita no período → não há base para rateio. Mantém deducoes = 0
+    // nas duas BUs (e ignora `totalDeducoes` ainda em kpisOp.deducoes).
+    kpisOp.deducoes      = 0
+    kpisReceita.deducoes = 0
+    kpisOp.proporcao = 0
+    kpisReceita.proporcao = 0
+  } else {
+    kpisOp.proporcao      = kpisOp.receita_bruta / totalBruta
+    kpisReceita.proporcao = kpisReceita.receita_bruta / totalBruta
+
+    kpisOp.deducoes      = round2(totalDeducoes * kpisOp.proporcao)
+    // Receita pega o complemento — garante Op + Receita == totalDeducoes
+    kpisReceita.deducoes = round2(totalDeducoes - kpisOp.deducoes)
+  }
+
+  // Recalcula os derivados em cada BU
+  for (const k of [kpisOp, kpisReceita]) {
+    k.receita_liquida   = k.receita_bruta - k.deducoes
+    k.margem_bruta      = k.receita_liquida - k.custos
+    k.ebitda            = k.margem_bruta - k.despesas_op
+    k.margem_ebitda_pct = k.receita_liquida > 0 ? (k.ebitda / k.receita_liquida) * 100 : 0
+  }
+
+  return totalDeducoes
 }
 
 function calcKpisForBU(rows: BaseRow[], bu: BU): BuKpis {
@@ -133,6 +177,58 @@ function calcEvolucao(rows: BaseRow[], window: string[]): BuEvolucaoPonto[] {
   }
 
   return window.map(ym => ({ mes: ym, ...acc.get(ym)! }))
+}
+
+/**
+ * Evolução para Operação + Receita com rateio mensal das deduções. Pós-0005
+ * as cat 2.x vivem todas em Operação, então o total de deduções do mês é
+ * exatamente `op.ded`. Rateia proporcional à receita bruta do mês de cada BU.
+ */
+function calcEvolucaoOpReceita(
+  rowsOp: BaseRow[],
+  rowsReceita: BaseRow[],
+  window: string[],
+): { op: BuEvolucaoPonto[]; receita: BuEvolucaoPonto[] } {
+  const op = new Map<string, { rb: number; ded: number; cu: number; do_: number }>()
+  const re = new Map<string, { rb: number; cu: number; do_: number }>()
+  for (const ym of window) {
+    op.set(ym, { rb: 0, ded: 0, cu: 0, do_: 0 })
+    re.set(ym, { rb: 0,           cu: 0, do_: 0 })
+  }
+
+  for (const r of rowsOp) {
+    const e = op.get(r.data_ym); if (!e) continue
+    const v = Math.abs(Number(r.valor))
+    const p1 = l1Prefix(r.categoria_nome)
+    if      (p1 === 1) e.rb  += v
+    else if (p1 === 2) e.ded += v   // pós-0005 todas as deduções caem aqui
+    else if (p1 === 3) e.cu  += v
+    else if (p1 === 4) e.do_ += v
+  }
+  for (const r of rowsReceita) {
+    const e = re.get(r.data_ym); if (!e) continue
+    const v = Math.abs(Number(r.valor))
+    const p1 = l1Prefix(r.categoria_nome)
+    if      (p1 === 1) e.rb  += v
+    else if (p1 === 3) e.cu  += v   // 3.2 ISAAS
+    else if (p1 === 4) e.do_ += v   // 4.1 despesas comerciais
+  }
+
+  const outOp:  BuEvolucaoPonto[] = []
+  const outRe:  BuEvolucaoPonto[] = []
+  for (const ym of window) {
+    const o = op.get(ym)!
+    const r = re.get(ym)!
+    const totalBruta = o.rb + r.rb
+    const propOp = totalBruta > 0 ? o.rb / totalBruta : 0
+    const dedOp  = round2(o.ded * propOp)
+    const dedRe  = round2(o.ded - dedOp)
+    const rlOp   = o.rb - dedOp
+    const rlRe   = r.rb - dedRe
+    outOp.push({ mes: ym, receita: rlOp, despesa: o.cu + o.do_, ebitda: rlOp - o.cu - o.do_ })
+    outRe.push({ mes: ym, receita: rlRe, despesa: r.cu + r.do_, ebitda: rlRe - r.cu - r.do_ })
+  }
+  return { op: outOp, receita: outRe }
 }
 
 function calcTops(rows: BaseRow[], n: number): { despesas: BuTopItem[]; receitas: BuTopItem[] } {
@@ -309,17 +405,92 @@ export async function GET(request: Request) {
       const byBuEvol    = groupByBu(evolRes.rows)
 
       const bus: BuData[] = []
-      // Operação e Receita sempre, mesmo zeradas
-      for (const bu of ['operacao', 'receita'] as const) {
-        bus.push(buildBuData(
-          bu,
-          byBuPeriodo.get(bu) ?? [],
-          byBuM1.get(bu) ?? [],
-          byBuEvol.get(bu) ?? [],
-          windowYMs,
-        ))
+
+      // ── Operação + Receita: rateio das deduções proporcional à RB ────────
+      const opPeriodo  = byBuPeriodo.get('operacao') ?? []
+      const recPeriodo = byBuPeriodo.get('receita')  ?? []
+      const opM1       = byBuM1.get('operacao')      ?? []
+      const recM1      = byBuM1.get('receita')       ?? []
+      const opEvol     = byBuEvol.get('operacao')    ?? []
+      const recEvol    = byBuEvol.get('receita')     ?? []
+
+      // KPIs do período corrente — calcula → rateio
+      const opKpis  = calcKpisForBU(opPeriodo,  'operacao')
+      const recKpis = calcKpisForBU(recPeriodo, 'receita')
+      const totalDeducoesPeriodo = aplicaRateio(opKpis, recKpis)
+
+      // M-1 KPIs — mesma mecânica, pra alimentar delta_vs_m1
+      const opKpisM1  = calcKpisForBU(opM1,  'operacao')
+      const recKpisM1 = calcKpisForBU(recM1, 'receita')
+      aplicaRateio(opKpisM1, recKpisM1)
+
+      // delta_vs_m1 sobre os valores rateados
+      const setDelta = (k: BuKpis, k1: BuKpis) => {
+        k.delta_vs_m1 = {
+          receita_liquida_pct: k1.receita_liquida > 0
+            ? ((k.receita_liquida - k1.receita_liquida) / k1.receita_liquida) * 100
+            : null,
+          ebitda_pct: Math.abs(k1.ebitda) > 0
+            ? ((k.ebitda - k1.ebitda) / Math.abs(k1.ebitda)) * 100
+            : null,
+          margem_ebitda_pp: k1.receita_liquida > 0
+            ? k.margem_ebitda_pct - k1.margem_ebitda_pct
+            : null,
+        }
       }
-      // Não Operacional e Sem Categoria só se houver no período
+      setDelta(opKpis, opKpisM1)
+      setDelta(recKpis, recKpisM1)
+
+      // Evolução 6 meses com rateio mensal
+      const evol = calcEvolucaoOpReceita(opEvol, recEvol, windowYMs)
+
+      // Tops e lançamentos
+      const opTops  = calcTops(opPeriodo,  5)
+      const recTops = calcTops(recPeriodo, 5)
+      const opLancamentos  = buildLancamentos(opPeriodo)
+      const recLancamentos = buildLancamentos(recPeriodo)
+
+      // Linha sintética da Receita: representa a parcela rateada das deduções,
+      // cujos lançamentos físicos vivem em Operação. Inserida no topo da
+      // lista de Receita para aparecer no drill-down de Receita Líquida
+      // (categoria_l1 = 2 cai no filtro KPI_TO_L1['receita_liquida']).
+      if (recKpis.deducoes > 0) {
+        const pctStr = (recKpis.proporcao * 100).toFixed(1).replace('.', ',') + '%'
+        const totStr = totalDeducoesPeriodo.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        recLancamentos.unshift({
+          id: 'sintetica:deducoes-rateadas',
+          data: '',
+          descricao: `Deduções rateadas (${pctStr} × ${totStr})`,
+          categoria: 'Deduções rateadas',
+          categoria_l1: 2,
+          centro_custo: '',
+          contraparte: '',
+          tipo: 'Despesa',
+          status: '',
+          valor: recKpis.deducoes,
+          _sintetica: true,
+          link_target: { bu: 'operacao', kpi: 'receita_liquida' },
+        })
+      }
+
+      bus.push({
+        bu: 'operacao',
+        kpis: opKpis,
+        evolucao: evol.op,
+        top_despesas: opTops.despesas,
+        top_receitas: opTops.receitas,
+        lancamentos: opLancamentos,
+      })
+      bus.push({
+        bu: 'receita',
+        kpis: recKpis,
+        evolucao: evol.receita,
+        top_despesas: recTops.despesas,
+        top_receitas: recTops.receitas,
+        lancamentos: recLancamentos,
+      })
+
+      // ── Não Operacional e Sem Categoria: sem rateio, lógica antiga ───────
       for (const bu of ['nao_operacional', 'sem_categoria'] as const) {
         const rows = byBuPeriodo.get(bu) ?? []
         if (rows.length === 0) continue
