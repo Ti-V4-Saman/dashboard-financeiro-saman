@@ -11,7 +11,10 @@ export interface ContaSaldo {
   tipo: string
   banco: string | null
   saldo: number
+  saldoEtl?: number
   dataUltimaConciliacao: string | null
+  syncedAt?: string | null
+  horasDesdeSync?: number | null
 }
 
 export interface SaldosData {
@@ -150,7 +153,7 @@ export function SaldosBancarios({ data, loading }: Props) {
                       )}
                     </div>
 
-                    {/* Nome + tipo */}
+                    {/* Nome + tipo (+ badge de defasagem se synced_at > 24h) */}
                     <div className="flex-1 min-w-0">
                       <div
                         className="text-[11px] font-medium truncate"
@@ -159,8 +162,22 @@ export function SaldosBancarios({ data, loading }: Props) {
                       >
                         {c.nome}
                       </div>
-                      <div className="text-[9px]" style={{ color: 'var(--ink4)' }}>
-                        {c.tipo}
+                      <div className="flex items-center gap-1.5 text-[9px]" style={{ color: 'var(--ink4)' }}>
+                        <span>{c.tipo}</span>
+                        {typeof c.horasDesdeSync === 'number' && c.horasDesdeSync > 24 && (
+                          <span
+                            className="rounded px-1 py-px"
+                            title={`Última sincronização: ${c.syncedAt ?? '—'}`}
+                            style={{
+                              background: 'var(--surf3)',
+                              color: 'var(--ink3)',
+                              fontSize: 9,
+                              lineHeight: 1.1,
+                            }}
+                          >
+                            ⚠ {Math.floor(c.horasDesdeSync / 24)}d
+                          </span>
+                        )}
                       </div>
                     </div>
 
