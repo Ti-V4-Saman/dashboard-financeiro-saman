@@ -13,6 +13,7 @@ import { Qualidade } from './tabs/Qualidade'
 import { Lancamentos } from './tabs/Lancamentos'
 import { MetasTab } from './tabs/Metas'
 import { NotasFiscais } from './tabs/NotasFiscais'
+import { BUs } from './tabs/BUs'
 import { UsuariosTab } from './tabs/Usuarios'
 import { BlockScreen } from './BlockScreen'
 import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN, SCREEN_TO_TAB } from '@/lib/screens'
@@ -124,6 +125,7 @@ export function DashboardLayout({
                 desce. A proteção server-side real (agregação por permissão) é Fase 2. */}
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
+            {activeTab === 'bus'         && <BUs filters={filters} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}

@@ -2,7 +2,7 @@
 
 import { TAB_TO_SCREEN, type Screen } from '@/lib/screens'
 
-type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'notas' | 'acesso'
+type Tab = 'visao' | 'dre' | 'cc' | 'comparativo' | 'qualidade' | 'lancamentos' | 'metas' | 'notas' | 'bus' | 'acesso'
 
 interface TabNavProps {
   active: Tab
@@ -15,6 +15,7 @@ interface TabNavProps {
 const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
   { id: 'visao',       label: 'Visão Geral' },
   { id: 'dre',         label: 'DRE' },
+  { id: 'bus',         label: 'BUs' },
   { id: 'cc',          label: 'Centros de Custo' },
   { id: 'comparativo', label: 'Comparativo' },
   { id: 'qualidade',   label: 'Qualidade & Insights' },

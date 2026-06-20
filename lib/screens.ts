@@ -19,6 +19,7 @@ export const SCREENS = [
   'lancamentos',
   'metas',
   'notas_fiscais',
+  'bus',
   'acesso',
 ] as const
 
@@ -38,6 +39,9 @@ export const SCREEN_LABELS: Record<Screen, string> = {
   lancamentos:        'Lançamentos',
   metas:              'Metas',
   notas_fiscais:      'Notas Fiscais',
+
+  bus:                'BUs',
+
   acesso:             'Acesso',
 }
 
@@ -51,6 +55,9 @@ export const TAB_TO_SCREEN: Record<string, Screen> = {
   lancamentos: 'lancamentos',
   metas:       'metas',
   notas:       'notas_fiscais',
+
+  bus:         'bus',
+
   acesso:      'acesso',
 }
 

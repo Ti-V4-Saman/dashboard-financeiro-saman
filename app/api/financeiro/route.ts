@@ -1,12 +1,27 @@
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
+
+import { getUserAccess } from '@/lib/access'
+
 import type { Lancamento } from '@/lib/types'
+import type { Screen } from '@/lib/screens'
 
 export const dynamic = 'force-dynamic'
 
 const pool = getPool()
 
 const TRANSFER_ORIGENS = new Set(['TRANSFERENCIA', 'SALDO_CONTA_BANCARIA'])
+
+// Telas que consomem este endpoint (via DashboardLayout.filteredData ou widgets).
+// Liberar se o usuário tiver QUALQUER uma — bloqueia só quem nunca veria
+// dados financeiros (ex.: permissões só de metas/notas_fiscais/qualidade).
+const SCREENS_QUE_USAM: Screen[] = [
+  'visao_geral',
+  'dre',
+  'centros_custo',
+  'comparativo',
+  'lancamentos',
+]
 
 /**
  * GET /api/financeiro?de=YYYY-MM-DD&ate=YYYY-MM-DD&regime=competencia|caixa
@@ -29,6 +44,14 @@ const TRANSFER_ORIGENS = new Set(['TRANSFERENCIA', 'SALDO_CONTA_BANCARIA'])
  */
 export async function GET(request: Request) {
   try {
+    const access = await getUserAccess()
+    if (!access.isAdmin && !SCREENS_QUE_USAM.some((s) => access.telasPermitidas.includes(s))) {
+      return NextResponse.json(
+        { error: 'Sem permissão para acessar dados financeiros.' },
+        { status: 403 },
+      )
+    }
+
     const { searchParams } = new URL(request.url)
     const de     = searchParams.get('de')     || null
     const ate    = searchParams.get('ate')    || null
