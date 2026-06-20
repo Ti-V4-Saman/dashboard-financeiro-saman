@@ -110,12 +110,20 @@ export async function GET(request: Request) {
           GROUP BY pp.conta_financeira_id
         ),
         movimentos_baixas AS (
-          SELECT conta_financeira_id,
-            SUM(CASE WHEN tipo = 'RECEITA' THEN valor ELSE 0 END) -
-            SUM(CASE WHEN tipo = 'DESPESA' THEN valor ELSE 0 END) AS movimento
-          FROM ca.baixas
-          WHERE conta_financeira_id IS NOT NULL
-          GROUP BY conta_financeira_id
+          -- Issue #33: ignorar baixas cuja parcela ainda esta ATRASADO/Atrasado.
+          -- Esse estado indica que a baixa foi registrada (com data_pagamento) mas
+          -- nao foi efetivamente quitada -- tipicamente reversao/estorno que a API
+          -- nao propagou para todos os campos. Ex.: Mktlab Boleto tinha 2 baixas
+          -- (R$ 6.118,81) nesse estado, fazendo o saldo divergir da tela do CA.
+          SELECT b.conta_financeira_id,
+            SUM(CASE WHEN b.tipo = 'RECEITA' THEN b.valor ELSE 0 END) -
+            SUM(CASE WHEN b.tipo = 'DESPESA' THEN b.valor ELSE 0 END) AS movimento
+          FROM ca.baixas b
+          LEFT JOIN ca.parcelas_receber pr ON pr.id = b.evento_id AND b.tipo = 'RECEITA'
+          LEFT JOIN ca.parcelas_pagar   pp ON pp.id = b.evento_id AND b.tipo = 'DESPESA'
+          WHERE b.conta_financeira_id IS NOT NULL
+            AND UPPER(COALESCE(pr.status, pp.status, '')) <> 'ATRASADO'
+          GROUP BY b.conta_financeira_id
         ),
         transf_in AS (
           SELECT conta_destino_id AS conta_id, SUM(valor) AS valor_in
