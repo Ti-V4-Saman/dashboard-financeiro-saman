@@ -481,19 +481,34 @@ export function BUs({ filters }: Props) {
 
   const de  = filters.dateFrom
   const ate = filters.dateTo
+  // Filtros do FilterBar global propagados pra route. Serializadas em
+  // chaves estáveis (`.join('|')`) pra estabilizar as deps do useEffect:
+  // como `filters.situacao` etc. são arrays, sem stringify o effect
+  // dispararia a cada re-render mesmo sem mudança real.
+  const tipo     = filters.tipo
+  const sitKey   = filters.situacao.join('|')
+  const catKey   = filters.categoria.join('|')
+  const ccKey    = filters.cc.join('|')
+  const contaKey = filters.conta.join('|')
 
   useEffect(() => {
     if (!de || !ate) return
     setLoading(true); setErro(null)
-    const params = new URLSearchParams({ de, ate }).toString()
-    fetch(`/api/financeiro/bus?${params}`)
+    const p = new URLSearchParams({ de, ate })
+    if (tipo) p.set('tipo', tipo)
+    filters.situacao .forEach(v => p.append('situacao',  v))
+    filters.categoria.forEach(v => p.append('categoria', v))
+    filters.cc       .forEach(v => p.append('cc',        v))
+    filters.conta    .forEach(v => p.append('conta',     v))
+    fetch(`/api/financeiro/bus?${p.toString()}`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json() as Promise<BusApiResponse>
       })
       .then(d => { setResp(d); setLoading(false) })
       .catch(e => { setErro(String(e)); setLoading(false) })
-  }, [de, ate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [de, ate, tipo, sitKey, catKey, ccKey, contaKey])
 
   const buMap = useMemo(() => {
     const m = new Map<BU, BuData>()
