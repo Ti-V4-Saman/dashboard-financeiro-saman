@@ -269,6 +269,7 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
                 <tr style={{ borderBottom: '1px solid var(--line)' }}>
                   <th className="py-1.5 pl-3 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Data</th>
                   <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Descrição</th>
+                  <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Cliente / Fornecedor</th>
                   <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>Categoria</th>
                   <th className="py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink3)' }}>CC</th>
                   <th className="py-1.5 pr-3 text-right text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap" style={{ color: 'var(--ink3)' }}>Valor</th>
@@ -278,7 +279,8 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
                 {bu.lancamentos.slice(0, 10).map(l => (
                   <tr key={l.id} style={{ borderBottom: '1px solid var(--line)' }}>
                     <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(parseDataLocal(l.data))}</td>
-                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)' }} title={l.descricao}>{l.descricao}</td>
+                    <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.descricao}>{l.descricao}</td>
+                    <td className="py-2 text-[11px]" style={{ color: l.contraparte ? 'var(--ink2)' : 'var(--ink3)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.contraparte || ''}>{l.contraparte || '—'}</td>
                     <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.categoria}>{l.categoria}</td>
                     <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)' }} title={l.centro_custo}>{l.centro_custo}</td>
                     <td
