@@ -124,9 +124,16 @@ function PainelBu({ bu }: { bu: BuData }) {
           value={fR(kpis.receita_liquida)}
           color="var(--green)"
           sub={(
-            <span style={{ color: deltaColor(kpis.delta_vs_m1.receita_liquida_pct) }}>
-              {fPct(kpis.delta_vs_m1.receita_liquida_pct)} vs M-1
-            </span>
+            <>
+              <span style={{ color: deltaColor(kpis.delta_vs_m1.receita_liquida_pct) }}>
+                {fPct(kpis.delta_vs_m1.receita_liquida_pct)} vs M-1
+              </span>
+              {/* Decomposição da líquida — sempre visível (mesmo se deduções=0) pra
+                  evitar assimetria visual entre BUs. Na Operação tipicamente RL = RB. */}
+              <div className="mt-0.5" style={{ color: 'var(--ink3)' }}>
+                Bruta {fR(kpis.receita_bruta)} · Deduções {fR(kpis.deducoes)}
+              </div>
+            </>
           )}
         />
         <KpiCard
