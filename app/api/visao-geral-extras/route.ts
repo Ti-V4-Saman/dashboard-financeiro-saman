@@ -393,7 +393,8 @@ export async function GET(request: Request) {
         return {
           id:   r.id,
           nome: r.nome,
-          tipo: traduzirTipo(r.tipo),
+          tipoRaw: r.tipo,                  // enum CA cru (CARTAO_CREDITO etc) p/ agregar
+          tipo: traduzirTipo(r.tipo),       // label traduzido p/ UI
           banco: r.banco ?? null,
           saldo: Number(r.saldo) || 0,
           saldoEtl: Number(r.saldo_etl) || 0,
@@ -403,10 +404,17 @@ export async function GET(request: Request) {
         }
       })
 
+      const disponivel     = contas.filter(c => c.tipoRaw !== 'CARTAO_CREDITO').reduce((s, c) => s + c.saldo, 0)
+      const dividaCartao   = contas.filter(c => c.tipoRaw === 'CARTAO_CREDITO').reduce((s, c) => s + c.saldo, 0)
+      const posicaoLiquida = disponivel + dividaCartao
+
       return NextResponse.json({
         saldos: {
           contas,
-          consolidado: contas.reduce((s, c) => s + c.saldo, 0),
+          consolidado: posicaoLiquida,
+          disponivel,
+          dividaCartao,
+          posicaoLiquida,
         },
         insights: {
           ticketVariacao,
