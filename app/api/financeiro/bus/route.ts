@@ -152,15 +152,18 @@ function calcTops(rows: BaseRow[], n: number): { despesas: BuTopItem[]; receitas
   return { despesas: toSorted(desp), receitas: toSorted(rec) }
 }
 
-function pickLancamentos(rows: BaseRow[], n: number): BuLancamento[] {
+// Retorna TODOS os lançamentos da BU no período, ordenados por data desc.
+// O frontend usa slice(0,10) para a visão padrão e filtra por categoria_l1
+// no drill-down dos KPIs — evita round-trip extra.
+function buildLancamentos(rows: BaseRow[]): BuLancamento[] {
   return [...rows]
     .sort((a, b) => b.data_iso.localeCompare(a.data_iso))
-    .slice(0, n)
     .map(r => ({
       id: `${r.tipo_origem}:${r.id_lancamento}`,
       data: r.data_iso,
       descricao: r.descricao,
       categoria: r.categoria_nome,
+      categoria_l1: l1Prefix(r.categoria_nome),
       centro_custo: r.centro_custo_nome,
       contraparte: r.contraparte_nome,
       tipo: r.tipo,
@@ -199,7 +202,7 @@ function buildBuData(
     evolucao: calcEvolucao(rowsEvolucao, windowYMs),
     top_despesas: tops.despesas,
     top_receitas: tops.receitas,
-    lancamentos_recentes: pickLancamentos(rowsPeriodo, 10),
+    lancamentos: buildLancamentos(rowsPeriodo),
   }
 }
 

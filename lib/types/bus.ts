@@ -50,6 +50,7 @@ export interface BuLancamento {
   data: string                     // YYYY-MM-DD
   descricao: string
   categoria: string
+  categoria_l1: number             // 1..7 (prefixo numérico do nome da categoria); 999 se sem categoria
   centro_custo: string
   contraparte: string
   tipo: 'Receita' | 'Despesa'
@@ -63,7 +64,10 @@ export interface BuData {
   evolucao: BuEvolucaoPonto[]      // 6 meses até mes_referencia inclusive
   top_despesas: BuTopItem[]        // top 5 por categoria
   top_receitas: BuTopItem[]        // top 5 por categoria
-  lancamentos_recentes: BuLancamento[]  // 10 mais recentes em [de..ate]
+  // Todos os lançamentos da BU no período [de..ate], ordenados por data desc.
+  // Frontend slice(0, 10) para a visão padrão. Drill-down de KPI filtra esta
+  // lista por categoria_l1 em memória — sem round-trip ao backend.
+  lancamentos: BuLancamento[]
 }
 
 export interface BusApiResponse {

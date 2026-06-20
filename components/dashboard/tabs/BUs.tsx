@@ -254,7 +254,7 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
     <Card>
       <CardHeader><CardTitle className="text-[13px]">Lançamentos recentes</CardTitle></CardHeader>
       <CardContent>
-        {bu.lancamentos_recentes.length === 0
+        {bu.lancamentos.length === 0
           ? <div className="text-[11px]" style={{ color: 'var(--ink3)' }}>Sem lançamentos no período.</div>
           : (
             <table className="w-full">
@@ -268,7 +268,7 @@ function LancamentosRecentes({ bu }: { bu: BuData }) {
                 </tr>
               </thead>
               <tbody>
-                {bu.lancamentos_recentes.map(l => (
+                {bu.lancamentos.slice(0, 10).map(l => (
                   <tr key={l.id} style={{ borderBottom: '1px solid var(--line)' }}>
                     <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(parseDataLocal(l.data))}</td>
                     <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)' }} title={l.descricao}>{l.descricao}</td>
