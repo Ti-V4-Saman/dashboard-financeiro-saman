@@ -78,6 +78,7 @@ export function DashboardLayout({
         clearAll={clearAll}
         allData={allData}
         listaContas={listaContas}
+        activeTab={activeTab}
       />
       <TabNav active={activeTab} onChange={setActiveTab} isAdmin={isAdmin} allowedScreens={allowedScreens} />
 

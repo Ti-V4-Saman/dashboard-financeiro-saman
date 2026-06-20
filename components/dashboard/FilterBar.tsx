@@ -11,6 +11,9 @@ interface FilterBarProps {
   clearAll: () => void
   allData: Lancamento[]
   listaContas: string[]
+  /** Tab ativa do dashboard. Permite desabilitar controles que não fazem
+   *  sentido em telas específicas (ex.: regime caixa na tab BUs). */
+  activeTab?: string
 }
 
 // ── PT-BR month names ─────────────────────────────────────────────────────────
@@ -357,7 +360,14 @@ function PeriodNavigator({ filters, onChange }: PeriodNavigatorProps) {
 
 // ── Regime toggle (Competência / Caixa) ───────────────────────────────────────
 
-function RegimeToggle({ value, onChange }: { value: 'competencia' | 'caixa'; onChange: (v: 'competencia' | 'caixa') => void }) {
+function RegimeToggle({
+  value, onChange, disabledMap,
+}: {
+  value: 'competencia' | 'caixa'
+  onChange: (v: 'competencia' | 'caixa') => void
+  /** Mapa id → tooltip quando o botão está desabilitado. */
+  disabledMap?: Partial<Record<'competencia' | 'caixa', string>>
+}) {
   const opts: { id: 'competencia' | 'caixa'; label: string }[] = [
     { id: 'competencia', label: 'Competência' },
     { id: 'caixa',       label: 'Caixa'       },
@@ -376,10 +386,14 @@ function RegimeToggle({ value, onChange }: { value: 'competencia' | 'caixa'; onC
     >
       {opts.map(opt => {
         const active = value === opt.id
+        const disabledTip = disabledMap?.[opt.id]
+        const isDisabled = !!disabledTip
         return (
           <button
             key={opt.id}
-            onClick={() => onChange(opt.id)}
+            onClick={isDisabled ? undefined : () => onChange(opt.id)}
+            disabled={isDisabled}
+            title={disabledTip}
             style={{
               height: 30,
               padding: '0 12px',
@@ -390,7 +404,8 @@ function RegimeToggle({ value, onChange }: { value: 'competencia' | 'caixa'; onC
               fontFamily:  'Inter, sans-serif',
               fontSize:    11,
               fontWeight:  active ? 600 : 400,
-              cursor:      'pointer',
+              cursor:      isDisabled ? 'not-allowed' : 'pointer',
+              opacity:     isDisabled ? 0.5 : 1,
               boxShadow:   active ? '0 0 0 0.5px var(--line2)' : 'none',
               transition:  'all 0.12s',
               whiteSpace:  'nowrap',
@@ -772,7 +787,7 @@ function Sep() {
 
 // ── FilterBar (public export) ─────────────────────────────────────────────────
 
-export function FilterBar({ filters, setFilters, clearAll, allData, listaContas }: FilterBarProps) {
+export function FilterBar({ filters, setFilters, clearAll, allData, listaContas, activeTab }: FilterBarProps) {
   const update = <K extends keyof Filters>(key: K, val: Filters[K]) =>
     setFilters({ ...filters, [key]: val })
 
@@ -829,10 +844,16 @@ export function FilterBar({ filters, setFilters, clearAll, allData, listaContas 
       style={{ background: 'var(--surface)', borderBottom: '1px solid var(--line)' }}
       className="px-6 py-[7px] flex flex-wrap items-center gap-2"
     >
-      {/* Regime — sem label (auto-explicativo) */}
+      {/* Regime — sem label (auto-explicativo).
+          Na tab BUs o regime caixa ainda não foi implementado (o route
+          /api/financeiro/bus só consulta competência). Desabilitamos
+          temporariamente o botão pra evitar confusão. */}
       <RegimeToggle
         value={filters.regime}
         onChange={v => update('regime', v)}
+        disabledMap={activeTab === 'bus'
+          ? { caixa: 'Regime caixa ainda não disponível para BUs. Em breve.' }
+          : undefined}
       />
 
       <Sep />
