@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 * * * *'   # De hora em hora (ETL dura ~44min)
   workflow_dispatch:       # Permite rodar manualmente pelo botão no GitHub
+    inputs:
+      sync_mode:
+        description: 'Modo de sincronização (incremental ou full)'
+        required: false
+        default: 'incremental'
+        type: choice
+        options:
+          - incremental
+          - full
 
 # Impede execuções paralelas: se uma já está rodando, a próxima espera.
 # Elimina a disputa pelo refresh token rotativo do Conta Azul.
@@ -39,4 +48,5 @@ jobs:
           CA_CLIENT_ID: ${{ secrets.CA_CLIENT_ID }}
           CA_CLIENT_SECRET: ${{ secrets.CA_CLIENT_SECRET }}
           CA_REFRESH_TOKEN: ${{ secrets.CA_REFRESH_TOKEN }}
+          SYNC_MODE: ${{ inputs.sync_mode || 'incremental' }}
         run: python -m etl.main
