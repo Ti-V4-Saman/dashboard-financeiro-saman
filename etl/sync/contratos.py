@@ -42,17 +42,24 @@ def _id(obj: Any) -> Optional[str]:
     return _str(v) or None
 
 
-FULL_SYNC_START = "2024-12-31"
-
 def _get_sync_params(mode: str = "incremental") -> Dict[str, str]:
-    today = date.today()
+    """
+    Em modo incremental: filtra por data_alteracao (últimos 30 dias) para
+    capturar qualquer mudança de status (ATIVO → INATIVO ao encerrar contrato).
+    Em modo full: sem filtro de data_alteracao — varre todos os contratos.
+
+    Nota: a API de /contratos não exige filtro de data obrigatório (diferente
+    de contas-receber), então em full não passamos nenhum parâmetro de data.
+    """
     if mode == "full":
-        start_date = FULL_SYNC_START
-    else:
-        start_date = (today - timedelta(days=60)).strftime("%Y-%m-%d")
+        return {}
+
+    gmt3    = timezone(timedelta(hours=-3))
+    alt_ate = datetime.now(timezone.utc).astimezone(gmt3).replace(tzinfo=None)
+    alt_de  = alt_ate - timedelta(days=30)
     return {
-        "data_inicio": start_date,
-        "data_fim":    today.strftime("%Y-%m-%d"),
+        "data_alteracao_de":  alt_de.strftime("%Y-%m-%dT%H:%M:%S"),
+        "data_alteracao_ate": alt_ate.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
 
