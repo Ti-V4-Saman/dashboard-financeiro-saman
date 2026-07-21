@@ -42,52 +42,56 @@ def _id(obj: Any) -> Optional[str]:
     return _str(v) or None
 
 
+FULL_SYNC_START = "2000-01-01"
+
 def _get_sync_params(mode: str = "incremental") -> Dict[str, str]:
     """
-    Em modo incremental: filtra por data_alteracao (últimos 30 dias) para
-    capturar qualquer mudança de status (ATIVO → INATIVO ao encerrar contrato).
-    Em modo full: sem filtro de data_alteracao — varre todos os contratos.
-
-    Nota: a API de /contratos não exige filtro de data obrigatório (diferente
-    de contas-receber), então em full não passamos nenhum parâmetro de data.
+    A API de /contratos exige data_inicio obrigatoriamente na listagem.
+    Usamos range amplo para não excluir nada por data de início do contrato.
+    Não existe filtro por data_alteracao neste endpoint.
     """
-    if mode == "full":
-        return {}
-
-    gmt3    = timezone(timedelta(hours=-3))
-    alt_ate = datetime.now(timezone.utc).astimezone(gmt3).replace(tzinfo=None)
-    alt_de  = alt_ate - timedelta(days=30)
+    today = date.today().strftime("%Y-%m-%d")
     return {
-        "data_alteracao_de":  alt_de.strftime("%Y-%m-%dT%H:%M:%S"),
-        "data_alteracao_ate": alt_ate.strftime("%Y-%m-%dT%H:%M:%S"),
+        "data_inicio": FULL_SYNC_START,
+        "data_fim":    today,
     }
 
 
 # ── Mapeadores ────────────────────────────────────────────────────────────────
 
 def _map_contrato(raw: Dict[str, Any]) -> Dict[str, Any]:
-    termos = raw.get("termos") or raw.get("terms") or {}
+    # Campos reais retornados pela API v1 (verificado via debug 2026-07-21):
+    # id, status, cliente{id,nome}, vendedor{id,nome}, termos{tipo_frequencia,
+    # tipo_expiracao, intervalo_frequencia, data_inicio, data_fim, dia_emissao_venda, numero},
+    # composicao_valor{valor_bruto, desconto, frete, valor_liquido, valor_impostos_servico},
+    # condicao_pagamento, configuracao_recorrencia, observacoes,
+    # data_proxima_emissao, data_proximo_vencimento, data_ultima_emissao,
+    # id_proxima_venda_agendada, id_ultima_venda_confirmada, local_prestacao_servico
+    # NÃO retorna: numero (raiz), categoria_id, centro_custo_id, data_emissao,
+    # valor_total, data_criacao, data_atualizacao, observacoes_pagamento
+    termos      = raw.get("termos") or {}
+    composicao  = raw.get("composicao_valor") or {}
 
     return {
-        "id":                    _str(raw.get("id") or raw.get("uuid") or ""),
-        "numero":                _int(raw.get("numero") or raw.get("number") or 0) or None,
-        "cliente_id":            _id(raw.get("cliente") or raw.get("id_cliente") or raw.get("customer")),
-        "vendedor_id":           _id(raw.get("vendedor") or raw.get("id_vendedor") or raw.get("seller")),
-        "categoria_id":          _id(raw.get("categoria") or raw.get("id_categoria") or raw.get("category")),
-        "centro_custo_id":       _id(raw.get("centro_de_custo") or raw.get("id_centro_custo") or raw.get("cost_center")),
-        "data_emissao":          _str(raw.get("data_emissao") or raw.get("date") or raw.get("created_at") or "") or None,
-        "tipo_frequencia":       _str(termos.get("tipo_frequencia") or termos.get("frequency_type") or "") or None,
-        "intervalo_frequencia":  _int(termos.get("intervalo_frequencia") or termos.get("interval") or 0) or None,
-        "data_inicio":           _str(termos.get("data_inicio") or termos.get("start_date") or "") or None,
-        "data_fim":              _str(termos.get("data_fim") or termos.get("end_date") or "") or None,
-        "tipo_expiracao":        _str(termos.get("tipo_expiracao") or termos.get("expiration_type") or "") or None,
-        "status":                _str(raw.get("status") or raw.get("situacao") or "") or None,
-        "valor_total":           _float(raw.get("valor_total") or raw.get("total") or raw.get("totalValue") or 0),
-        "observacoes":           _str(raw.get("observacoes") or raw.get("notes") or "") or None,
-        "observacoes_pagamento": _str(raw.get("observacoes_pagamento") or raw.get("payment_notes") or "") or None,
-        "id_contrato_origem":    _id(raw.get("id_contrato_origem") or raw.get("origin_contract_id")),
-        "data_criacao":          _str(raw.get("data_criacao") or raw.get("created_at") or "") or None,
-        "data_atualizacao":      _str(raw.get("data_atualizacao") or raw.get("updated_at") or "") or None,
+        "id":                    _str(raw.get("id") or ""),
+        "numero":                _int(termos.get("numero") or 0) or None,
+        "cliente_id":            _id(raw.get("cliente")),
+        "vendedor_id":           _id(raw.get("vendedor")),
+        "categoria_id":          None,
+        "centro_custo_id":       None,
+        "data_emissao":          None,
+        "tipo_frequencia":       _str(termos.get("tipo_frequencia") or "") or None,
+        "intervalo_frequencia":  _int(termos.get("intervalo_frequencia") or 0) or None,
+        "data_inicio":           _str(termos.get("data_inicio") or "") or None,
+        "data_fim":              _str(termos.get("data_fim") or "") or None,
+        "tipo_expiracao":        _str(termos.get("tipo_expiracao") or "") or None,
+        "status":                _str(raw.get("status") or "") or None,
+        "valor_total":           _float(composicao.get("valor_liquido") or composicao.get("valor_bruto") or 0),
+        "observacoes":           _str(raw.get("observacoes") or "") or None,
+        "observacoes_pagamento": None,
+        "id_contrato_origem":    None,
+        "data_criacao":          None,
+        "data_atualizacao":      None,
         "synced_at":             datetime.now(timezone.utc),
     }
 
