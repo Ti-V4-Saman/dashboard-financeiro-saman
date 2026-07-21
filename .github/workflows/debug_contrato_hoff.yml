@@ -1,0 +1,87 @@
+name: Debug Contrato HOFF
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Debug contrato HOFF e filtro status=INATIVO
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID: ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET: ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN: ${{ secrets.CA_REFRESH_TOKEN }}
+        run: |
+          python3 -c "
+          import os, sys, json
+          sys.path.insert(0, '.')
+          from etl.auth import get_access_token
+          from etl.client import ContaAzulClient
+
+          token = get_access_token()
+          client = ContaAzulClient(token)
+
+          HOFF_ID = 'e061a7f1-d0e8-485b-9942-37fc8f148365'
+
+          print('=' * 60)
+          print('1. GET /contratos/{id} — contrato HOFF')
+          print('=' * 60)
+          try:
+              data = client.get(f'/contratos/{HOFF_ID}')
+              print('Status:', data.get('status'))
+              print('Campos retornados:', sorted(data.keys()))
+              print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+          except Exception as e:
+              print('ERRO:', e)
+
+          print()
+          print('=' * 60)
+          print('2. GET /contratos?status=INATIVO — quantos retorna?')
+          print('=' * 60)
+          try:
+              inativos = client.get_all('/contratos', extra_params={'status': 'INATIVO'})
+              print(f'Total INATIVO via filtro: {len(inativos)}')
+              if inativos:
+                  print('Campos retornados no primeiro:', sorted(inativos[0].keys()))
+                  # Verifica se HOFF está entre os inativos
+                  hoff_inativo = [c for c in inativos if c.get('id') == HOFF_ID]
+                  print('HOFF aparece no filtro INATIVO?', 'SIM' if hoff_inativo else 'NAO')
+          except Exception as e:
+              print('ERRO:', e)
+
+          print()
+          print('=' * 60)
+          print('3. GET /contratos sem filtro — status da HOFF')
+          print('=' * 60)
+          try:
+              todos = client.get_all('/contratos')
+              hoff = [c for c in todos if c.get('id') == HOFF_ID]
+              if hoff:
+                  print('HOFF encontrada. Status:', hoff[0].get('status'))
+              else:
+                  print('HOFF NAO encontrada na listagem geral')
+              status_counts = {}
+              for c in todos:
+                  s = c.get('status', 'sem_status')
+                  status_counts[s] = status_counts.get(s, 0) + 1
+              print('Distribuicao de status:', status_counts)
+          except Exception as e:
+              print('ERRO:', e)
+          "
