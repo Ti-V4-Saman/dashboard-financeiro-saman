@@ -22,7 +22,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug contrato HOFF e filtro status=INATIVO
+      - name: Debug phantoms contas_receber via API CA
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CA_CLIENT_ID: ${{ secrets.CA_CLIENT_ID }}
@@ -34,54 +34,41 @@ jobs:
           sys.path.insert(0, '.')
           from etl.auth import get_access_token
           from etl.client import ContaAzulClient
+          from etl.db import get_connection
 
           token = get_access_token()
           client = ContaAzulClient(token)
 
-          HOFF_ID = 'e061a7f1-d0e8-485b-9942-37fc8f148365'
+          # Busca alguns phantoms do banco para testar na API
+          with get_connection() as conn:
+              with conn.cursor() as cur:
+                  cur.execute('''
+                      SELECT cr.id, p.nome, cr.data_vencimento, cr.total, cr.status
+                      FROM ca.contas_receber cr
+                      JOIN ca.pessoas p ON p.id = cr.pessoa_id
+                      JOIN ca.contratos c ON c.cliente_id = p.id
+                      WHERE cr.id_venda IS NULL
+                        AND cr.data_atualizacao IS NULL
+                        AND cr.status NOT ILIKE 'Cancelado'
+                        AND c.status = 'INATIVO'
+                        AND cr.data_vencimento >= CURRENT_DATE
+                      LIMIT 5
+                  ''')
+                  phantoms = cur.fetchall()
 
-          print('=' * 60)
-          print('1. GET /contratos/{id} — contrato HOFF')
-          print('=' * 60)
-          try:
-              data = client.get(f'/contratos/{HOFF_ID}')
-              print('Status:', data.get('status'))
-              print('Campos retornados:', sorted(data.keys()))
-              print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
-          except Exception as e:
-              print('ERRO:', e)
-
+          print('Phantoms no banco:', len(phantoms))
           print()
-          print('=' * 60)
-          print('2. GET /contratos?status=INATIVO — quantos retorna?')
-          print('=' * 60)
-          try:
-              inativos = client.get_all('/contratos', extra_params={'status': 'INATIVO'})
-              print(f'Total INATIVO via filtro: {len(inativos)}')
-              if inativos:
-                  print('Campos retornados no primeiro:', sorted(inativos[0].keys()))
-                  # Verifica se HOFF está entre os inativos
-                  hoff_inativo = [c for c in inativos if c.get('id') == HOFF_ID]
-                  print('HOFF aparece no filtro INATIVO?', 'SIM' if hoff_inativo else 'NAO')
-          except Exception as e:
-              print('ERRO:', e)
 
-          print()
-          print('=' * 60)
-          print('3. GET /contratos sem filtro — status da HOFF')
-          print('=' * 60)
-          try:
-              todos = client.get_all('/contratos')
-              hoff = [c for c in todos if c.get('id') == HOFF_ID]
-              if hoff:
-                  print('HOFF encontrada. Status:', hoff[0].get('status'))
-              else:
-                  print('HOFF NAO encontrada na listagem geral')
-              status_counts = {}
-              for c in todos:
-                  s = c.get('status', 'sem_status')
-                  status_counts[s] = status_counts.get(s, 0) + 1
-              print('Distribuicao de status:', status_counts)
-          except Exception as e:
-              print('ERRO:', e)
+          for cr_id, nome, venc, total, status_db in phantoms:
+              print('=' * 60)
+              print(f'Cliente: {nome}')
+              print(f'Vencimento: {venc} | Valor: {total} | Status DB: {status_db}')
+              print(f'ID: {cr_id}')
+              try:
+                  data = client.get(f'/financeiro/eventos-financeiros/{cr_id}')
+                  print(f'API retornou: status={data.get(\"status\")} | valor_aberto={data.get(\"valor_aberto\")}')
+                  print(f'Campos: {sorted(data.keys())}')
+              except Exception as e:
+                  print(f'ERRO na API: {e}')
+              print()
           "
