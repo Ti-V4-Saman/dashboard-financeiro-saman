@@ -22,7 +22,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug phantoms contas_receber via API CA
+      - name: Debug phantoms contas_receber e contas_pagar via API CA
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           CA_CLIENT_ID: ${{ secrets.CA_CLIENT_ID }}
@@ -30,7 +30,7 @@ jobs:
           CA_REFRESH_TOKEN: ${{ secrets.CA_REFRESH_TOKEN }}
         run: |
           python3 -c "
-          import os, sys, json
+          import os, sys, json, time
           sys.path.insert(0, '.')
           from etl.auth import get_access_token
           from etl.client import ContaAzulClient
@@ -39,36 +39,67 @@ jobs:
           token = get_access_token()
           client = ContaAzulClient(token)
 
-          # Busca alguns phantoms do banco para testar na API
           with get_connection() as conn:
               with conn.cursor() as cur:
+
+                  # CONTAS A RECEBER
                   cur.execute('''
-                      SELECT cr.id, p.nome, cr.data_vencimento, cr.total, cr.status
-                      FROM ca.contas_receber cr
-                      JOIN ca.pessoas p ON p.id = cr.pessoa_id
-                      JOIN ca.contratos c ON c.cliente_id = p.id
-                      WHERE cr.id_venda IS NULL
-                        AND cr.data_atualizacao IS NULL
-                        AND cr.status NOT ILIKE 'Cancelado'
-                        AND c.status = 'INATIVO'
-                        AND cr.data_vencimento >= CURRENT_DATE
-                      LIMIT 5
+                      SELECT id, status, data_vencimento, total
+                      FROM ca.contas_receber
+                      WHERE id_venda IS NULL AND data_atualizacao IS NULL
+                      ORDER BY data_vencimento
                   ''')
-                  phantoms = cur.fetchall()
+                  cr_rows = cur.fetchall()
 
-          print('Phantoms no banco:', len(phantoms))
-          print()
+                  # CONTAS A PAGAR
+                  cur.execute('''
+                      SELECT id, status, data_vencimento, total
+                      FROM ca.contas_pagar
+                      WHERE data_atualizacao IS NULL
+                      ORDER BY data_vencimento
+                  ''')
+                  cp_rows = cur.fetchall()
 
-          for cr_id, nome, venc, total, status_db in phantoms:
-              print('=' * 60)
-              print(f'Cliente: {nome}')
-              print(f'Vencimento: {venc} | Valor: {total} | Status DB: {status_db}')
-              print(f'ID: {cr_id}')
-              try:
-                  data = client.get(f'/financeiro/eventos-financeiros/{cr_id}')
-                  print(f'API retornou: status={data.get(\"status\")} | valor_aberto={data.get(\"valor_aberto\")}')
-                  print(f'Campos: {sorted(data.keys())}')
-              except Exception as e:
-                  print(f'ERRO na API: {e}')
+          def testar_ids(rows, endpoint_prefix, label):
+              nao_existe   = []
+              existe       = []
+              outro_status = []
+              erros        = []
+
+              for row_id, status_db, venc, total in rows:
+                  try:
+                      data = client.get(f'/{endpoint_prefix}/{row_id}')
+                      if data is None:
+                          nao_existe.append((row_id, status_db, venc, total))
+                      else:
+                          status_api = data.get('status', '?')
+                          if status_api != status_db:
+                              outro_status.append((row_id, status_db, status_api, venc, total))
+                          else:
+                              existe.append((row_id, status_db, venc, total))
+                  except Exception as e:
+                      erros.append((row_id, status_db, venc, total, str(e)))
+                  time.sleep(0.12)  # respeita rate limit 10 req/s
+
+              print(f'=== {label} ({len(rows)} registros no banco) ===')
+              print(f'  Nao existe na API (phantom):  {len(nao_existe)} registros | R\$ {sum(t for _,_,_,t in nao_existe):,.2f}')
+              print(f'  Existe com status diferente:   {len(outro_status)} registros | R\$ {sum(t for _,_,_,_,t in outro_status):,.2f}')
+              print(f'  Existe igual ao banco:         {len(existe)} registros | R\$ {sum(t for _,_,_,t in existe):,.2f}')
+              print(f'  Erro na chamada API:           {len(erros)} registros')
+
+              if outro_status:
+                  print()
+                  print('  Registros com status divergente (DB -> API):')
+                  for row_id, s_db, s_api, venc, total in outro_status[:20]:
+                      print(f'    {venc} | R\${total:>10,.2f} | {s_db} -> {s_api} | {row_id}')
+
+              if erros:
+                  print()
+                  print('  Primeiros erros:')
+                  for row_id, s_db, venc, total, err in erros[:5]:
+                      print(f'    {venc} | {s_db} | {err[:80]}')
               print()
+
+          testar_ids(cr_rows, 'financeiro/eventos-financeiros', 'CONTAS A RECEBER')
+          testar_ids(cp_rows, 'financeiro/eventos-financeiros', 'CONTAS A PAGAR')
           "
