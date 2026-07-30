@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useSession } from 'next-auth/react'
 import { TopBar } from './TopBar'
 import { FilterBar } from './FilterBar'
-import { TabNav, type Tab } from './TabNav'
+import { TabNav, TAB_ORDER, type Tab } from './TabNav'
 import { VisaoGeral } from './tabs/VisaoGeral'
 import { DRE } from './tabs/DRE'
 import { CentrosCusto } from './tabs/CentrosCusto'
@@ -16,7 +16,8 @@ import { NotasFiscais } from './tabs/NotasFiscais'
 import { BUs } from './tabs/BUs'
 import { UsuariosTab } from './tabs/Usuarios'
 import { BlockScreen } from './BlockScreen'
-import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN, SCREEN_TO_TAB } from '@/lib/screens'
+import { ScreenErrorBoundary } from './ScreenErrorBoundary'
+import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN } from '@/lib/screens'
 import type { Lancamento, Filters } from '@/lib/types'
 
 interface DashboardLayoutProps {
@@ -62,12 +63,33 @@ export function DashboardLayout({
   const activeSlug = TAB_TO_SCREEN[activeTab]
   const canSeeActive = isAdmin || allowedScreens.includes(activeSlug)
 
-  // Se a aba ativa não é permitida, leva para a primeira tela liberada (quando há).
+  /**
+   * Primeira aba permitida NA ORDEM DO MENU. Usa TAB_ORDER, não a ordem de
+   * `allowedScreens` — esta última vem do banco e pode estar em qualquer
+   * ordem, o que faria o dash abrir numa aba do meio do menu.
+   * 'acesso' fica fora: é gestão de usuários, não um destino de dados.
+   */
+  const primeiraTabPermitida = useMemo<Tab | null>(() => {
+    const t = TAB_ORDER.find(tab => {
+      const slug = TAB_TO_SCREEN[tab]
+      return slug !== 'acesso' && allowedScreens.includes(slug)
+    })
+    return t ?? null
+  }, [allowedScreens])
+
+  /**
+   * Aba inicial segura: nunca inicializar numa tela sem permissão.
+   *
+   * O estado começa em 'visao' porque a sessão ainda não resolveu no primeiro
+   * render — mas o conteúdo só monta depois de `sessionLoading` virar false
+   * (o loader cobre esse intervalo), então nenhum fetch de tela proibida
+   * chega a disparar. Assim que a sessão resolve, se a aba corrente não for
+   * permitida, troca para a primeira do menu que for.
+   */
   useEffect(() => {
     if (sessionLoading || isAdmin || canSeeActive) return
-    const primeira = allowedScreens.find(s => s !== 'acesso') ?? allowedScreens[0]
-    if (primeira) setActiveTab(SCREEN_TO_TAB[primeira] as Tab)
-  }, [sessionLoading, isAdmin, canSeeActive, allowedScreens])
+    if (primeiraTabPermitida) setActiveTab(primeiraTabPermitida)
+  }, [sessionLoading, isAdmin, canSeeActive, primeiraTabPermitida])
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
@@ -111,6 +133,13 @@ export function DashboardLayout({
         ) : !canSeeActive ? (
           <BlockScreen allowedScreens={allowedScreens} onNavigate={(t) => setActiveTab(t as Tab)} />
         ) : (
+          // Boundary envolve SÓ o conteúdo da aba. TopBar/FilterBar/TabNav ficam
+          // fora: se uma tela quebrar, o usuário ainda consegue navegar para outra.
+          <ScreenErrorBoundary
+            resetKey={activeTab}
+            allowedScreens={allowedScreens}
+            onNavigate={(t) => setActiveTab(t as Tab)}
+          >
           // Opacity sutil durante refetch server-side (troca de período / regime)
           <div
             className="animate-fadeIn"
@@ -134,7 +163,8 @@ export function DashboardLayout({
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
-          </div>
+            </div>
+          </ScreenErrorBoundary>
         )}
       </main>
     </div>

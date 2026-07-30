@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
+import { jsonFetcher, isForbidden } from '@/lib/fetchJson'
 import type { Filters } from '@/lib/types'
 import type { BU, BuData, BusApiResponse, KpiKey } from '@/lib/types/bus'
 import { fR, fDt, parseDataLocal } from '@/lib/utils'
@@ -500,13 +501,15 @@ export function BUs({ filters }: Props) {
     filters.categoria.forEach(v => p.append('categoria', v))
     filters.cc       .forEach(v => p.append('cc',        v))
     filters.conta    .forEach(v => p.append('conta',     v))
-    fetch(`/api/financeiro/bus?${p.toString()}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        return r.json() as Promise<BusApiResponse>
-      })
+    jsonFetcher<BusApiResponse>(`/api/financeiro/bus?${p.toString()}`)
       .then(d => { setResp(d); setLoading(false) })
-      .catch(e => { setErro(String(e)); setLoading(false) })
+      .catch(e => {
+        // 403 é falta de permissão, não falha — merece texto próprio em vez
+        // de despejar "HttpError: HTTP 403" na tela.
+        setErro(isForbidden(e) ? 'SEM_PERMISSAO' : String(e))
+        setResp(null)
+        setLoading(false)
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [de, ate, tipo, sitKey, catKey, ccKey, contaKey])
 
@@ -526,6 +529,13 @@ export function BUs({ filters }: Props) {
   }, [resp, buMap, activeSub])
 
   if (loading && !resp) return <div className="text-[12px]" style={{ color: 'var(--ink3)' }}>Carregando BUs…</div>
+  if (erro === 'SEM_PERMISSAO') {
+    return (
+      <div className="text-[12px]" style={{ color: 'var(--ink3)', padding: '32px 0', textAlign: 'center' }}>
+        Você não tem permissão para visualizar os dados de BUs.
+      </div>
+    )
+  }
   if (erro) return <div className="text-[12px]" style={{ color: 'var(--red)' }}>Erro ao carregar BUs: {erro}</div>
   if (!resp) return null
 
