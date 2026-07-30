@@ -25,6 +25,14 @@ const TABS: { id: Tab; label: string; adminOnly?: boolean }[] = [
   { id: 'acesso',      label: '🔐 Acesso', adminOnly: true },
 ]
 
+/**
+ * Ordem em que as abas aparecem no menu — NÃO é a mesma de SCREENS em
+ * lib/screens.ts (lá 'bus' vem depois de 'notas_fiscais'; aqui é a 3ª).
+ * Exportada para o DashboardLayout escolher a aba inicial na ordem que o
+ * usuário de fato enxerga.
+ */
+export const TAB_ORDER: Tab[] = TABS.map(t => t.id)
+
 export function TabNav({ active, onChange, isAdmin, allowedScreens }: TabNavProps) {
   const visible = TABS.filter(t => {
     // 'acesso' (adminOnly) só para admin — equivale à permissão is_admin.
