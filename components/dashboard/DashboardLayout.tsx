@@ -16,6 +16,7 @@ import { NotasFiscais } from './tabs/NotasFiscais'
 import { BUs } from './tabs/BUs'
 import { UsuariosTab } from './tabs/Usuarios'
 import { BlockScreen } from './BlockScreen'
+import { ScreenErrorBoundary } from './ScreenErrorBoundary'
 import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN, SCREEN_TO_TAB } from '@/lib/screens'
 import type { Lancamento, Filters } from '@/lib/types'
 
@@ -111,6 +112,13 @@ export function DashboardLayout({
         ) : !canSeeActive ? (
           <BlockScreen allowedScreens={allowedScreens} onNavigate={(t) => setActiveTab(t as Tab)} />
         ) : (
+          // Boundary envolve SÓ o conteúdo da aba. TopBar/FilterBar/TabNav ficam
+          // fora: se uma tela quebrar, o usuário ainda consegue navegar para outra.
+          <ScreenErrorBoundary
+            resetKey={activeTab}
+            allowedScreens={allowedScreens}
+            onNavigate={(t) => setActiveTab(t as Tab)}
+          >
           // Opacity sutil durante refetch server-side (troca de período / regime)
           <div
             className="animate-fadeIn"
@@ -134,7 +142,8 @@ export function DashboardLayout({
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}
-          </div>
+            </div>
+          </ScreenErrorBoundary>
         )}
       </main>
     </div>
