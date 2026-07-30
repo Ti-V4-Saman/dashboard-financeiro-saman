@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import traceback
+from collections import Counter
 from datetime import date, datetime, timedelta
 
 from etl.auth import get_access_token
@@ -650,8 +651,6 @@ def simular_dashboard(cur, amostras_db, de, ate):
 
 def montar_conclusoes(itens_nfse, amostras, nfe_probe, arquivos):
     campo = RELATORIO["endpoints"].get("nfse", {}).get("campo_escriturado_manualmente_na_listagem")
-    manuais = [a for a in amostras if a["payload_listagem"].get("escriturado_manualmente", {}).get("valor") is True] \
-        if amostras and isinstance(amostras[0].get("payload_listagem"), dict) else []
 
     def sim_nao(v):
         return "SIM" if v is True else ("NÃO" if v is False else "INCONCLUSIVO")
@@ -661,8 +660,12 @@ def montar_conclusoes(itens_nfse, amostras, nfe_probe, arquivos):
         for a in amostras if a.get("campos_investigados")
     } - {None})
 
+    # arquivos_nota contém, além dos dicts por nota, a chave textual "_escopo".
+    # Filtrar por isinstance evita AttributeError ao chamar .get() numa str.
     tem_arquivo = any(
-        t.get("utilizavel") for r in arquivos.values() for t in r.get("tentativas", [])
+        t.get("utilizavel")
+        for r in arquivos.values() if isinstance(r, dict)
+        for t in r.get("tentativas", [])
         if t.get("rotulo") != "consulta individual"
     ) if arquivos else None
 
@@ -750,6 +753,18 @@ def main() -> int:
         "campos_investigados_ausentes_em_todos": [
             c for c in CAMPOS_INVESTIGADOS if c not in chaves_uniao
         ],
+        "contagem_escriturado_manualmente": {
+            "total_itens": len(itens_nfse),
+            "true":        sum(1 for i in itens_nfse if i.get("escriturado_manualmente") is True),
+            "false":       sum(1 for i in itens_nfse if i.get("escriturado_manualmente") is False),
+            "sem_o_campo": sum(1 for i in itens_nfse if "escriturado_manualmente" not in i),
+            "valor_null":  sum(1 for i in itens_nfse
+                               if "escriturado_manualmente" in i
+                               and i.get("escriturado_manualmente") is None),
+        },
+        "distribuicao_por_status": dict(
+            sorted(Counter(str(i.get("status")) for i in itens_nfse).items())
+        ),
     })
 
     # 3. NF-e: prova de qual conjunto de parâmetros funciona
