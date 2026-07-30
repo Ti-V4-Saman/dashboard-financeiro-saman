@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react'
 import useSWR from 'swr'
+import { jsonFetcher } from '@/lib/fetchJson'
 import type { Lancamento } from '@/lib/types'
 import { fR, fDt } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -50,7 +51,9 @@ interface QualidadeData {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+// jsonFetcher lança em 403; qData fica undefined e o `?.`/`?? []` já
+// existente no componente cobre o estado vazio.
+const fetcher = jsonFetcher
 
 type Semaforo = 'verde' | 'amarelo' | 'vermelho' | 'cinza'
 

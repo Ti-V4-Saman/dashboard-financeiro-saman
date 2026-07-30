@@ -38,6 +38,7 @@
  */
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
+import { safeFetcher, asArray } from '@/lib/fetchJson'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
 
@@ -47,7 +48,11 @@ interface Props {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+// Este widget é montado dentro da Visão Geral, mas puxa /api/metas — tela que
+// o usuário pode NÃO ter. Em 403, `safeFetcher` devolve o vazio do tipo em vez
+// do corpo do erro, que antes caía direto num .filter() e derrubava a página.
+const fetcherMetas = safeFetcher<Meta[]>([])
+const fetcherLancamentos = safeFetcher<{ lancamentos: Lancamento[] }>({ lancamentos: [] })
 
 const MES_LABEL_CURTO = ['', 'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
                               'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
@@ -145,12 +150,14 @@ function calcMes(
   excludeBaixados: boolean = false,
 ): MesCalc {
   if (!ym) return { ym: '', hasData: false, linhas: [] }
-  const rows = data.filter(r => {
+  // asArray: rede final. Se algum dia uma resposta inesperada escapar do
+  // fetcher, o widget renderiza vazio em vez de estourar .filter().
+  const rows = asArray<Lancamento>(data).filter(r => {
     if (r.data_ym !== ym) return false
     if (excludeBaixados && r.situacao === 'Quitado') return false
     return true
   })
-  const metasMes = metas.filter(m => m.mes_referencia === ym)
+  const metasMes = asArray<Meta>(metas).filter(m => m.mes_referencia === ym)
 
   /** Soma assinada (receita + / despesa −) das categorias do(s) L1. */
   const calcTotal = (l1: string | string[]): number => {
@@ -574,7 +581,7 @@ function CardSkeleton() {
 export default function ResumoTrimestralWidget({ filters }: Props) {
   const { data: metas = [], isLoading: metasLoading } = useSWR<Meta[]>(
     '/api/metas',
-    fetcher,
+    fetcherMetas,
     { refreshInterval: 5 * 60 * 1000 },
   )
 
@@ -604,12 +611,12 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
 
   const { data: apiResp, isLoading: dataLoading } = useSWR<{ lancamentos: Lancamento[] }>(
     apiUrl,
-    fetcher,
+    fetcherLancamentos,
     { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
   )
 
   const apiData = useMemo<Lancamento[]>(
-    () => apiResp?.lancamentos ?? [],
+    () => asArray<Lancamento>(apiResp?.lancamentos),
     [apiResp],
   )
 

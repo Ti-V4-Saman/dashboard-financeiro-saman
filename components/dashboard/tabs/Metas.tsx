@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react'
 import useSWR from 'swr'
+import { safeFetcher, asArray } from '@/lib/fetchJson'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { fR, parseCatHier, getL2Label } from '@/lib/utils'
 import { DRE_LEAVES, NON_DRE_ROWS, KPI_ROWS, ALL_CATEGORY_LEAVES } from '@/lib/categoryTree'
@@ -48,7 +49,9 @@ function fPctOfFat(val: number, fat: number): string {
   return ((val / fat) * 100).toFixed(1).replace('.', ',') + '%'
 }
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+// Sem permissão para a tela 'metas' a API responde 403. safeFetcher devolve
+// [] em vez do corpo do erro — antes ele chegava inteiro no .filter() abaixo.
+const fetcher = safeFetcher<Meta[]>([])
 
 /** Filtro de "realizado" sensível ao regime contábil.
  *  Caixa  → só Quitado (pagamentos efetivos / baixas)
@@ -246,7 +249,7 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
 
   const aplicarBulkEdit = async (updates: BulkUpdate) => {
     const ids = Array.from(selectedIds)
-    const alvo = metas.filter(m => ids.includes(m.id))
+    const alvo = asArray<Meta>(metas).filter(m => ids.includes(m.id))
     const atualizados = alvo.map(m => {
       const next = { ...m }
       if (updates.valor_planejado != null) next.valor_planejado = updates.valor_planejado

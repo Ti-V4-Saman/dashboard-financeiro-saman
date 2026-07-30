@@ -1,5 +1,6 @@
 'use client'
 import useSWR from 'swr'
+import { jsonFetcher } from '@/lib/fetchJson'
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import type { Lancamento, Filters, Regime, TipoPeriodo, Atalho } from '@/lib/types'
@@ -7,7 +8,9 @@ import { parseDataLocal } from '@/lib/utils'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+// jsonFetcher lança em !ok, então `raw` fica undefined em erro/403 e os
+// guards de Array.isArray abaixo funcionam como planejado.
+const fetcher = jsonFetcher
 
 function toYMD(d: Date): string {
   const y  = d.getFullYear()

@@ -9,6 +9,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
+import { jsonFetcher } from '@/lib/fetchJson'
 import type { Lancamento, Filters } from '@/lib/types'
 import { filtraOperacional } from '@/lib/financeiro/regime'
 import { fR, fDt } from '@/lib/utils'
@@ -169,10 +170,12 @@ export function VisaoGeral({ data, filters }: Props) {
     const params = new URLSearchParams({ de, ate, regime }).toString()
 
     setLoading(true)
-    fetch(`/api/visao-geral-extras?${params}`)
-      .then(r => r.json())
-      .then((d: ExtrasResponse) => { setExtras(d); setLoading(false) })
-      .catch(() => setLoading(false))
+    // Em 403 (ou qualquer erro) mantém `extras` nulo: os blocos já tratam
+    // ausência de dado. Antes, o corpo do erro virava `extras` e podia
+    // chegar num .map() dos blocos.
+    jsonFetcher<ExtrasResponse>(`/api/visao-geral-extras?${params}`)
+      .then(d => { setExtras(d); setLoading(false) })
+      .catch(() => { setExtras(null); setLoading(false) })
   }, [filters?.dateFrom, filters?.dateTo, filters?.regime])
 
   // Em caixa, os KPIs grandes refletem "o que movimentou ou deveria movimentar
