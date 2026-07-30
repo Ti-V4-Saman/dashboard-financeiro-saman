@@ -19,9 +19,16 @@ export const dynamic = 'force-dynamic'
 
 const pool = getPool()
 
+// Origem da nota — INDEPENDENTE do status. Uma nota pode ser status EMITIDA
+// e origem escriturada_manualmente ao mesmo tempo. Derivada exclusivamente de
+// ca.notas_fiscais.escriturado_manualmente; nunca inferida de status ou datas.
+export type OrigemNota = 'emitida_conta_azul' | 'escriturada_manualmente' | 'nao_identificada'
+
 export interface NotaRow {
   id: string                                          // id NF, ou venda_id quando sem NF
   kind: 'emitida' | 'cancelada' | 'falha' | 'recebido_sem_nf' | 'a_receber'
+  origem: OrigemNota                                  // origem da NF (nao_identificada quando não há NF)
+  escriturado_manualmente: boolean | null             // valor cru, para auditoria
   numero: number | null                               // número da NF (null para sem NF)
   lancamento: string                                  // descricao da CR
   cliente: string
@@ -204,6 +211,7 @@ export async function GET(request: Request) {
           nf.venda_id::text                 AS venda_id,
           nf.data_emissao::text             AS data_emissao,
           COALESCE(nf.valor_total, 0)::float AS valor,
+          nf.escriturado_manualmente        AS escriturado_manualmente,
           COALESCE(NULLIF(nf.nome_cliente, ''), p.nome, '') AS cliente
         FROM ca.notas_fiscais nf
         LEFT JOIN ca.pessoas p ON p.id = nf.cliente_id
@@ -247,7 +255,8 @@ export async function GET(request: Request) {
         client.query<{
           id: string; numero: number | null; status: string;
           venda_id: string | null; data_emissao: string;
-          valor: number; cliente: string
+          valor: number; cliente: string;
+          escriturado_manualmente: boolean | null
         }>(nfsSql, [de, ate]),
         client.query<{
           id_venda: string; descricao: string; cliente: string;
@@ -295,9 +304,19 @@ export async function GET(request: Request) {
           tempo = Math.max(0, Math.round((em - ref) / 86_400_000))
         }
 
+        // Origem: só o booleano decide. null (API não informou, ou nota que
+        // a API não retorna mais) fica como não identificada — nunca vira
+        // "emitida pelo Conta Azul" por omissão.
+        const origem: OrigemNota =
+          nf.escriturado_manualmente === true  ? 'escriturada_manualmente' :
+          nf.escriturado_manualmente === false ? 'emitida_conta_azul' :
+                                                 'nao_identificada'
+
         rows.push({
           id:                  nf.id,
           kind,
+          origem,
+          escriturado_manualmente: nf.escriturado_manualmente ?? null,
           numero:              nf.numero,
           lancamento:          venda?.descricao ?? '(NF sem venda vinculada no período)',
           cliente:             nf.cliente || venda?.cliente || '',
@@ -316,6 +335,10 @@ export async function GET(request: Request) {
         rows.push({
           id:                  venda.id_venda,
           kind:                'recebido_sem_nf',
+          // Não há nota, logo não há origem. A UI não exibe badge de origem
+          // para estas linhas.
+          origem:              'nao_identificada',
+          escriturado_manualmente: null,
           numero:              null,
           lancamento:          venda.descricao,
           cliente:             venda.cliente,
@@ -338,6 +361,8 @@ export async function GET(request: Request) {
         rows.push({
           id:                  venda.id_venda,
           kind:                'a_receber',
+          origem:              'nao_identificada',   // sem nota: sem origem
+          escriturado_manualmente: null,
           numero:              null,
           lancamento:          venda.descricao,
           cliente:             venda.cliente,
