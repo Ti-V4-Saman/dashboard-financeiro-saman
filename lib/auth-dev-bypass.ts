@@ -23,6 +23,7 @@ export function getDevBypassSession() {
       name: process.env.DEV_USER_NAME || 'Dev Local',
       image: null,
       isAdmin: true,
+      verFolhaDetalhe: true,
       // Dev bypass enxerga todas as telas (espelha isAdmin).
       telasPermitidas: [...ALL_SCREENS],
     },
