@@ -2,9 +2,6 @@
 
 import { fR } from '@/lib/utils'
 import {
-  calcTicketMedioReceita,
-  calcDiaDePico,
-  calcBurnDiario,
 } from '@/lib/calcInsights'
 import type { Lancamento } from '@/lib/types'
 
@@ -21,9 +18,10 @@ interface InsightsExtras {
 }
 
 interface Props {
-  data: Lancamento[]
-  dateFrom: string
-  dateTo: string
+  /** Valores já calculados por lib/aggregations/visaoGeral (aggVisaoGeral). */
+  insights: { ticket: number; pico: { label: string; valor: number } | null; burn: number }
+  /** Quantidade de lançamentos operacionais — o card some quando é 0. */
+  totalLancamentos: number
   extras?: InsightsExtras | null
 }
 
@@ -94,12 +92,10 @@ function SubStat({
 
 // ── InsightsPeriodo ───────────────────────────────────────────────────────────
 
-export function InsightsPeriodo({ data, dateFrom, dateTo, extras }: Props) {
-  const ticket = calcTicketMedioReceita(data)
-  const pico   = calcDiaDePico(data)
-  const burn   = calcBurnDiario(data, dateFrom, dateTo)
+export function InsightsPeriodo({ insights, totalLancamentos, extras }: Props) {
+  const { ticket, pico, burn } = insights
 
-  if (data.length === 0) return null
+  if (totalLancamentos === 0) return null
 
   return (
     <>

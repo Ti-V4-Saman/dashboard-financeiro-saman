@@ -9,10 +9,13 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
+import useSWR from 'swr'
 import { jsonFetcher } from '@/lib/fetchJson'
 import type { Lancamento, Filters } from '@/lib/types'
-import { filtraOperacional } from '@/lib/financeiro/regime'
-import { fR, fDt } from '@/lib/utils'
+import { fR } from '@/lib/utils'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import { aggVisaoGeral, type VisaoGeralAgg } from '@/lib/aggregations/visaoGeral'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { SaldosBancarios, type SaldosData } from '@/components/dashboard/SaldosBancarios'
 import { InsightsPeriodo } from '@/components/dashboard/InsightsPeriodo'
@@ -80,78 +83,56 @@ function BarListItem({ label, value, max, color }: { label: string; value: numbe
 }
 
 export function VisaoGeral({ data, filters }: Props) {
-  const op = useMemo(
-    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
-    [data, filters?.regime]
+  const aggOn = isAggClientEnabled()
+
+  // Dia de referência do KPI Atrasados. Calculado no cliente e enviado ao
+  // servidor para que os dois caminhos da flag comparem contra o MESMO dia
+  // (o browser roda em GMT-3, o servidor em UTC).
+  const hojeYmd = useMemo(() => {
+    const h = new Date()
+    return `${h.getFullYear()}-${String(h.getMonth() + 1).padStart(2, '0')}-${String(h.getDate()).padStart(2, '0')}`
+  }, [])
+
+  const filtros = useMemo(() => ({
+    categoria: filters?.categoria ?? [],
+    cc:        filters?.cc ?? [],
+    tipo:      filters?.tipo ?? '',
+    situacao:  filters?.situacao ?? [],
+    conta:     filters?.conta ?? [],
+  }), [filters?.categoria, filters?.cc, filters?.tipo, filters?.situacao, filters?.conta])
+
+  // Caminho AGREGADO (flag ON): uma chamada, sem baixar o array cru.
+  const aggUrl = useMemo(() => {
+    if (!aggOn || !filters) return null
+    return `/api/agg/visao-geral?${buildAggQuery(filters, { hoje: hojeYmd })}`
+  }, [aggOn, filters, hojeYmd])
+
+  const { data: aggResp } = useSWR<VisaoGeralAgg>(aggUrl, aggFetcher, { keepPreviousData: true })
+
+  // Caminho LEGADO (flag OFF): a MESMA função pura, rodando no browser sobre
+  // o array que o DashboardLayout já passa por prop.
+  const local = useMemo(
+    () => aggVisaoGeral(data, filtros, filters?.regime ?? 'competencia', hojeYmd,
+      { de: filters?.dateFrom ?? '', ate: filters?.dateTo ?? '' }),
+    [data, filtros, filters?.regime, hojeYmd, filters?.dateFrom, filters?.dateTo],
   )
 
-  const { receita, despesa, resultado, margem, atrasados } = useMemo(() => {
-    let rec = 0, desp = 0, atr = 0
-    const hoje = new Date()
-    for (const r of op) {
-      if (r.tipo === 'Receita') rec += r.valor
-      else desp += r.valor
-    }
-    for (const r of data) {
-      if ((r.situacao === 'Atrasado' || r.situacao === 'Aberto') && r.data && r.data < hoje) {
-        atr += r.valor
-      }
-    }
-    const res = rec - desp
-    return { receita: rec, despesa: desp, resultado: res, margem: rec > 0 ? (res / rec) * 100 : 0, atrasados: atr }
-  }, [op, data])
+  const VAZIO: VisaoGeralAgg = {
+    kpis: { receita: 0, despesa: 0, resultado: 0, margem: 0, lancamentos: 0, atrasados: 0, semCat: 0, semCC: 0 },
+    insights: { ticket: 0, pico: null, burn: 0 },
+    graficos: { diario: [] },
+    agrupamentos: { topDespesasCategoria: [], maxDespesaCategoria: 1, topCentrosCusto: [], maxCentroCusto: 1 },
+  }
 
-  const semCat = useMemo(() => op.filter(r => !r.cat1 || r.cat1 === '(em branco)').length, [op])
-  const semCC  = useMemo(() => op.filter(r => !r.cc1  || r.cc1  === '(em branco)').length, [op])
+  const agg: VisaoGeralAgg = aggOn ? (aggResp ?? VAZIO) : local
 
-  // Daily data for bar chart
-  const dailyData = useMemo(() => {
-    const map = new Map<string, { data: string; rec: number; desp: number }>()
-    for (const r of op) {
-      if (!r.data) continue
-      const key = fDt(r.data)
-      if (!map.has(key)) map.set(key, { data: key, rec: 0, desp: 0 })
-      const entry = map.get(key)!
-      if (r.tipo === 'Receita') entry.rec += r.valor
-      else entry.desp += r.valor
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      const [da, ma, ya] = a.data.split('/').map(Number)
-      const [db, mb, yb] = b.data.split('/').map(Number)
-      return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime()
-    })
-  }, [op])
-
-  // Top 10 despesas por categoria
-  const topDespCat = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Despesa') continue
-      const key = r.cat1 || 'Sem categoria'
-      map.set(key, (map.get(key) || 0) + r.valor)
-    }
-    return Array.from(map.entries())
-      .map(([nome, valor]) => ({ nome, valor }))
-      .sort((a, b) => b.valor - a.valor)
-      .slice(0, 10)
-  }, [op])
-  const maxDespCat = topDespCat[0]?.valor || 1
-
-  // Top 10 CC
-  const topCC = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const r of op) {
-      if (r.tipo !== 'Despesa') continue
-      for (const c of r._ccList) {
-        map.set(c.nome, (map.get(c.nome) || 0) + r.valor)
-      }
-    }
-    return Array.from(map.entries())
-      .map(([nome, valor]) => ({ nome, valor }))
-      .sort((a, b) => b.valor - a.valor)
-      .slice(0, 10)
-  }, [op])
-  const maxCC = topCC[0]?.valor || 1
+  const { receita, despesa, resultado, margem, atrasados, semCat, semCC } = agg.kpis
+  const qtdLancamentos = agg.kpis.lancamentos
+  const dailyData      = agg.graficos.diario
+  const topDespCat     = agg.agrupamentos.topDespesasCategoria
+  const maxDespCat     = agg.agrupamentos.maxDespesaCategoria
+  const topCC          = agg.agrupamentos.topCentrosCusto
+  const maxCC          = agg.agrupamentos.maxCentroCusto
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
@@ -198,7 +179,7 @@ export function VisaoGeral({ data, filters }: Props) {
           value={`${margem.toFixed(1)}%`}
           color={margem >= 10 ? 'var(--green)' : margem >= 0 ? 'var(--amber)' : 'var(--red)'}
         />
-        <KpiCard label="Lançamentos" value={op.length.toLocaleString('pt-BR')} color="var(--blue)" />
+        <KpiCard label="Lançamentos" value={qtdLancamentos.toLocaleString('pt-BR')} color="var(--blue)" />
         <KpiCard
           label="Atrasados"
           value={fR(atrasados)}
@@ -278,9 +259,8 @@ export function VisaoGeral({ data, filters }: Props) {
 
             {/* InsightsPeriodo — renderizado dentro do mesmo card */}
             <InsightsPeriodo
-              data={op}
-              dateFrom={filters?.dateFrom ?? ''}
-              dateTo={filters?.dateTo ?? ''}
+              insights={agg.insights}
+              totalLancamentos={qtdLancamentos}
               extras={extras?.insights ?? null}
             />
           </CardContent>
