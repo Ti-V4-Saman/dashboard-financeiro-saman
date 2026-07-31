@@ -9,6 +9,7 @@
  */
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
+import { requireScreen } from '@/lib/access'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,6 +79,12 @@ function variacao(
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
+  // Autorização ANTES de qualquer consulta. Este endpoint alimenta só a
+  // Visão Geral (saldos, insights de variação e blocos), então usa a mesma
+  // tela — não o conjunto acoplado de /api/financeiro. Correção isolada:
+  // nenhum SQL, resposta ou tratamento de erro foi alterado.
+  const denied = await requireScreen('visao_geral')
+  if (denied) return denied
   try {
     const { searchParams } = new URL(request.url)
     const de     = searchParams.get('de')     || null
