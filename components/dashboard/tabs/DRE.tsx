@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import type { Lancamento, Filters } from '@/lib/types'
 import { filtraOperacional, detalheDRE } from '@/lib/financeiro/regime'
+import { useAccess } from '@/lib/useAccess'
+import { protegerDetalheFolha } from '@/lib/folha'
 import { fR, fDt, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
 import {
   Sheet,
@@ -334,12 +336,20 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   const [mesSel, setMesSel] = useState<string | undefined>(undefined)
   const [open, setOpen] = useState(false)
 
-  const linhasModal = useMemo(
-    () => linhaSel
-      ? detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
-      : [],
-    [linhaSel, mesSel, data, filters?.regime]
-  )
+  // Proteção de folha no caminho legado. O array bruto já está no browser
+  // (vem de /api/financeiro), então isto é defesa em profundidade, não a
+  // correção definitiva — ver relatório do Bloco E sobre /api/financeiro.
+  // Mesmo assim vale: nenhum nome de folha chega à tela de quem não pode ver.
+  const { verFolhaDetalhe } = useAccess()
+
+  const { linhasModal, dadosProtegidos } = useMemo(() => {
+    if (!linhaSel) return { linhasModal: [], dadosProtegidos: false }
+    const brutas = detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
+    // Mascara POR LANÇAMENTO: num subtotal misto, as linhas comuns seguem
+    // completas e só as de folha são protegidas. Quantidade e total intactos.
+    const { rows, dadosProtegidos } = protegerDetalheFolha(brutas, verFolhaDetalhe)
+    return { linhasModal: rows, dadosProtegidos }
+  }, [linhaSel, mesSel, data, filters?.regime, verFolhaDetalhe])
 
   const kindModal = (rowKind: DRERow['kind']): 'n3' | 'agrupador' | 'subtotal' => {
     if (rowKind === 'l3') return 'n3'
@@ -864,6 +874,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
         onOpenChange={setOpen}
         linhaSel={linhaSel}
         linhas={linhasModal}
+        dadosProtegidos={dadosProtegidos}
         periodo={periodoLabel(mesSel, filters?.dateFrom, filters?.dateTo)}
       />
 
@@ -874,12 +885,14 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
 // ─── Sheet de conferência por linha ──────────────────────────────────────────
 
 function DRESheet({
-  open, onOpenChange, linhaSel, linhas, periodo,
+  open, onOpenChange, linhaSel, linhas, dadosProtegidos, periodo,
 }: {
   open: boolean
   onOpenChange: (b: boolean) => void
   linhaSel: { label: string; matcher: (r: Lancamento) => boolean; kind: 'n3' | 'agrupador' | 'subtotal' } | null
   linhas: ReturnType<typeof detalheDRE>
+  /** Alguma linha teve contraparte/descrição mascaradas por falta de ver_folha_detalhe. */
+  dadosProtegidos: boolean
   periodo: string
 }) {
   const hasReceita = linhas.some(l => l.tipo === 'Receita')
@@ -925,6 +938,12 @@ function DRESheet({
               <> · {catCount} categoria{catCount === 1 ? '' : 's'}</>
             )}
           </div>
+          {dadosProtegidos && (
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
+              Alguns lançamentos de folha estão com contraparte e descrição
+              ocultas. Os valores e o total não foram alterados.
+            </div>
+          )}
           <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
             {isMixed ? (
               <>

@@ -25,6 +25,11 @@ export interface AccessInfo {
   isAdmin: boolean
   allowedScreens: Screen[]
   loading: boolean
+  /**
+   * Pode ver contraparte/descrição de lançamentos de folha. Admin sempre true.
+   * Espelha lib/access.ts. É UI: a proteção real é server-side, nos endpoints.
+   */
+  verFolhaDetalhe: boolean
   /** true só quando a sessão já resolveu E a tela está liberada. */
   can: (slug: Screen) => boolean
 }
@@ -46,13 +51,17 @@ export function useAccess(): AccessInfo {
     [isAdmin, session],
   )
 
+  const verFolhaDetalhe =
+    isAdmin || (session?.user as { verFolhaDetalhe?: boolean })?.verFolhaDetalhe === true
+
   return useMemo(
     () => ({
       isAdmin,
       allowedScreens,
       loading,
+      verFolhaDetalhe,
       can: (slug: Screen) => !loading && (isAdmin || allowedScreens.includes(slug)),
     }),
-    [isAdmin, allowedScreens, loading],
+    [isAdmin, allowedScreens, loading, verFolhaDetalhe],
   )
 }
