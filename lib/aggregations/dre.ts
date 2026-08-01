@@ -1,16 +1,24 @@
-import { detalheDRE } from '@/lib/financeiro/regime'
+import { filtraOperacional, detalheDRE } from '@/lib/financeiro/regime'
 import { protegerDetalheFolha } from '@/lib/folha'
-import { parseCatHier } from '@/lib/utils'
+import { parseCatHier, getL2Label } from '@/lib/utils'
 import type { Lancamento } from '@/lib/types'
 
 /**
- * Agregação da DRE — detalhe sob demanda.
+ * Agregação da DRE — resumo e detalhe.
  *
- * ESCOPO DESTE ARQUIVO HOJE
- * Só o DETALHE (o Sheet de conferência). O resumo agregado — hierarquia,
- * mensal, executivo, KPIs — ainda não foi portado; ver relatório do Bloco E.
+ * ESTE ARQUIVO TEM DUAS METADES
+ *   1. RESUMO   `aggResumoDRE` — hierarquia com valores, subtotais, série
+ *      mensal, KPIs executivos e KPIs inferiores. Função PURA, chamada pelos
+ *      DOIS caminhos da flag: com AGG_BACKEND off ela roda no browser sobre o
+ *      array cru; com on, roda no servidor. Não existem duas implementações
+ *      para divergirem.
+ *   2. DETALHE  `aggDetalheDRE` — o Sheet de conferência, sob demanda.
  *
- * SEGURANÇA — o motivo de existir
+ * O QUE O RESUMO NÃO FAZ: decidir o que está expandido. `exp1`/`exp2` são
+ * estado de UI e continuam no componente. O servidor devolve valor para TODO
+ * nó da árvore; abrir e fechar não refaz requisição nem muda payload.
+ *
+ * SEGURANÇA — o motivo do detalhe existir
  * O detalhe expõe, por lançamento, `contraparte` (nome da pessoa) e `desc`
  * ("6/14 - Remuneração de Fulano"). Quem não tem `ver_folha_detalhe` recebe
  * esses dois campos mascarados nas linhas de folha, e só nelas. Valor, data,
@@ -204,4 +212,272 @@ export function aggDetalheDRE(
     dadosProtegidos,
     rows,
   }
+}
+
+// ── Resumo ───────────────────────────────────────────────────────────────────
+
+/** Nó folha da árvore: uma categoria `cat1` inteira. */
+export interface NoL3 {
+  l3: string
+  /** Valores por coluna, na ordem de `cols`. */
+  vals: number[]
+}
+
+export interface NoL2 {
+  l2: string
+  /** Rótulo descritivo (`getL2Label`) — o que a tabela mostra. */
+  label: string
+  vals: number[]
+  children: NoL3[]
+}
+
+export interface NoL1 {
+  l1: string
+  vals: number[]
+  children: NoL2[]
+}
+
+/** As oito séries de subtotal, cada uma por coluna. */
+export interface SubtotaisDRE {
+  recBruta: number[]
+  recLiq: number[]
+  lucroBruto: number[]
+  margContrib: number[]
+  ebitda: number[]
+  ebit: number[]
+  ebt: number[]
+  lucroLiq: number[]
+}
+
+/** KPIs executivos — os cards do topo. Acumulados do período. */
+export interface ExecDRE {
+  recOp: number
+  recFin: number
+  recBruta: number
+  recLiq: number
+  lubruto: number
+  margContrib: number
+  ebitda: number
+  ebit: number
+  lucroLiq: number
+  /** null quando há menos de 2 meses ou o mês anterior fechou em zero. */
+  growthRate: number | null
+}
+
+/** KPIs da faixa inferior. Todos acumulados. */
+export interface KpisDRE {
+  recOp: number
+  recLiq: number
+  lubruto: number
+  margContrib: number
+  ebitda: number
+  ebit: number
+  lucroLiq: number
+  deducoes: number
+  csp: number
+  terceiros: number
+  despCom: number
+  despAdmin: number
+  despGerais: number
+  gastosPessoas: number
+  despAquisicao: number
+  leadBroker: number
+  despExpansao: number
+  proLabore: number
+  growthRate: number | null
+}
+
+export interface ResumoDRE {
+  /** 'YYYY-MM' ordenados. As colunas são [...meses, '__acc__']. */
+  months: string[]
+  hier: NoL1[]
+  subtotais: SubtotaisDRE
+  exec: ExecDRE
+  kpis: KpisDRE
+  /** Lançamentos operacionais no período. 0 → a tela mostra o estado vazio. */
+  totalOperacional: number
+}
+
+/**
+ * 'YYYY-MM' do lançamento.
+ *
+ * Prioriza `data_ym`, calculado no Postgres — sem ambiguidade de fuso. O
+ * fallback aceita Date (caminho legado, onde `useFinanceiro` já converteu) e
+ * string 'YYYY-MM-DD' (caminho servidor, onde `data` continua string). É essa
+ * tolerância que permite a MESMA função rodar nos dois lados; `getMonths` de
+ * lib/utils assume Date e quebraria no servidor.
+ */
+function ymOf(r: Lancamento): string | null {
+  if (r.data_ym) return r.data_ym
+  const d = r.data as unknown
+  if (!d) return null
+  if (typeof d === 'string') return d.slice(0, 7)
+  const dt = d as Date
+  if (typeof dt.getFullYear !== 'function') return null
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * Resumo completo da DRE. Função pura, sem I/O e sem React.
+ *
+ * Espelha, na ordem, o que o componente fazia: `filtraOperacional` → `vm`
+ * (mês → l1 → l2 → l3 → valor assinado) → `hier` ordenada por prefixo numérico
+ * → getters → subtotais → exec → kpis.
+ *
+ * DUAS SUTILEZAS PRESERVADAS DE PROPÓSITO
+ *
+ *   • `vm` ignora lançamento sem data; `hier` NÃO. Uma categoria que só tem
+ *     lançamento sem data aparece na árvore com todos os valores zerados. É o
+ *     comportamento atual e mexer nisso mudaria a tela.
+ *
+ *   • O sinal vem de `valorDRE`, não de `valor` (regime.ts:59 documenta o
+ *     mesmo acoplamento no detalhe). Trocar aqui sem trocar lá quebraria a
+ *     conferência "rodapé do modal == valor da célula".
+ */
+export function aggResumoDRE(data: readonly Lancamento[], regime: string): ResumoDRE {
+  const op = filtraOperacional(data as Lancamento[], regime)
+
+  const monthsSet = new Set<string>()
+  for (const r of op) { const ym = ymOf(r); if (ym) monthsSet.add(ym) }
+  const months = [...monthsSet].sort()
+  const cols = [...months, '__acc__']
+
+  // mês → l1 → l2 → l3 → valor assinado
+  const vm: Record<string, Record<string, Record<string, Record<string, number>>>> = {}
+  for (const row of op) {
+    const ym = ymOf(row)
+    if (!ym) continue
+    const sign = row.tipo === 'Receita' ? 1 : -1
+    const { l1, l2 } = parseCatHier(row.cat1)
+    const l3 = row.cat1 || l2
+    if (!vm[ym])         vm[ym]         = {}
+    if (!vm[ym][l1])     vm[ym][l1]     = {}
+    if (!vm[ym][l1][l2]) vm[ym][l1][l2] = {}
+    vm[ym][l1][l2][l3] = (vm[ym][l1][l2][l3] ?? 0) + sign * row.valorDRE
+  }
+
+  // Estrutura da árvore — sobre TODO op, inclusive sem data (ver nota acima).
+  const l1m = new Map<string, Map<string, Set<string>>>()
+  for (const row of op) {
+    const { l1, l2 } = parseCatHier(row.cat1)
+    const l3 = row.cat1 || l2
+    if (!l1m.has(l1)) l1m.set(l1, new Map())
+    if (!l1m.get(l1)!.has(l2)) l1m.get(l1)!.set(l2, new Set())
+    l1m.get(l1)!.get(l2)!.add(l3)
+  }
+  const estrutura = [...l1m.entries()]
+    .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
+    .map(([l1, l2m]) => ({
+      l1,
+      children: [...l2m.entries()]
+        .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
+        .map(([l2, l3s]) => ({ l2, children: [...l3s].sort((a, b) => numPrefix(a) - numPrefix(b)) })),
+    }))
+
+  // Getters — idênticos aos do componente.
+  const getL3 = (col: string, l1: string, l2: string, l3: string): number =>
+    col === '__acc__'
+      ? months.reduce((s, m) => s + (vm[m]?.[l1]?.[l2]?.[l3] ?? 0), 0)
+      : vm[col]?.[l1]?.[l2]?.[l3] ?? 0
+
+  const getL2 = (col: string, l1: string, l2: string): number =>
+    col === '__acc__'
+      ? months.reduce((s, m) => s + getL2(m, l1, l2), 0)
+      : Object.values(vm[col]?.[l1]?.[l2] ?? {}).reduce((s, v) => s + v, 0)
+
+  const getL1 = (col: string, l1: string): number => {
+    if (col === '__acc__') return months.reduce((s, m) => s + getL1(m, l1), 0)
+    let s = 0
+    for (const l2v of Object.values(vm[col]?.[l1] ?? {}))
+      for (const v of Object.values(l2v)) s += v
+    return s
+  }
+
+  const groupSum = (col: string, maxPfx: number): number =>
+    estrutura.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + getL1(col, h.l1), 0)
+
+  const makeVals = (fn: (col: string) => number) => cols.map(fn)
+
+  // Árvore com valores em cada nó.
+  const hier: NoL1[] = estrutura.map(({ l1, children }) => ({
+    l1,
+    vals: makeVals(col => getL1(col, l1)),
+    children: children.map(({ l2, children: l3s }) => ({
+      l2,
+      label: getL2Label(l2),
+      vals: makeVals(col => getL2(col, l1, l2)),
+      children: l3s.map(l3 => ({ l3, vals: makeVals(col => getL3(col, l1, l2, l3)) })),
+    })),
+  }))
+
+  const subtotais: SubtotaisDRE = {
+    recBruta:    makeVals(col => groupSum(col, 1.99)),
+    recLiq:      makeVals(col => groupSum(col, 2.99)),
+    lucroBruto:  makeVals(col => groupSum(col, 3.99)),
+    margContrib: makeVals(col => groupSum(col, 3.99) + getL2(col, '4 — Despesas', '4.1')),
+    ebitda:      makeVals(col => groupSum(col, 4.99)),
+    ebit:        makeVals(col => groupSum(col, 5.99)),
+    ebt:         makeVals(col => groupSum(col, 6.99)),
+    lucroLiq:    makeVals(col => groupSum(col, 99)),
+  }
+
+  // ── KPIs executivos ────────────────────────────────────────────────────────
+  const recOp    = groupSum('__acc__', 1.99)
+  const recFin   = getL1('__acc__', '6.1 — Rec. Financeira')
+  const recLiq   = groupSum('__acc__', 2.99)
+  const lubruto  = groupSum('__acc__', 3.99)
+  const despCom  = getL2('__acc__', '4 — Despesas', '4.1')
+  const ebitda   = groupSum('__acc__', 4.99)
+  const ebit     = groupSum('__acc__', 5.99)
+  const lucroLiq = groupSum('__acc__', 99)
+
+  // Growth Rate: dois últimos meses VISÍVEIS, não os dois últimos do calendário.
+  let growthRate: number | null = null
+  if (months.length >= 2) {
+    const prvRL = groupSum(months[months.length - 2], 2.99)
+    const curRL = groupSum(months[months.length - 1], 2.99)
+    if (prvRL) growthRate = (curRL - prvRL) / Math.abs(prvRL)
+  }
+
+  const exec: ExecDRE = {
+    recOp, recFin,
+    recBruta: recOp + recFin,
+    recLiq, lubruto,
+    margContrib: lubruto + despCom,
+    ebitda, ebit, lucroLiq, growthRate,
+  }
+
+  // ── KPIs inferiores ────────────────────────────────────────────────────────
+  // `S` soma por PREFIXO de cat1 — recortes que não coincidem com a hierarquia
+  // L1/L2 (ex.: "gastos com pessoas" cruza 3.1, 3.2, 4.1 e 4.2).
+  const S = (...pfx: string[]) =>
+    op.filter(r => pfx.some(p => (r.cat1 || '').startsWith(p)))
+      .reduce((s, r) => s + (r.tipo === 'Receita' ? 1 : -1) * r.valorDRE, 0)
+
+  const maoObraCSP = getL2('__acc__', '3 — Custos Operac.', '3.1')
+  const isaas      = getL2('__acc__', '3 — Custos Operac.', '3.2')
+  const remuCom    = S('4.1.01', '4.1.02', '4.1.03', '4.1.04', '4.1.05', '4.1.23')
+  const admPessoas = S('4.2.01', '4.2.02', '4.2.03', '4.2.04', '4.2.05', '4.2.06',
+                       '4.2.07', '4.2.08', '4.2.09', '4.2.25', '4.2.26')
+
+  const kpis: KpisDRE = {
+    recOp, recLiq, lubruto,
+    margContrib: exec.margContrib,
+    ebitda, ebit, lucroLiq,
+    deducoes:    groupSum('__acc__', 2.99) - groupSum('__acc__', 1.99),
+    csp:         getL1('__acc__', '3 — Custos Operac.'),
+    terceiros:   getL2('__acc__', '3 — Custos Operac.', '3.3'),
+    despCom,
+    despAdmin:   getL2('__acc__', '4 — Despesas', '4.2'),
+    despGerais:  getL2('__acc__', '4 — Despesas', '4.3'),
+    gastosPessoas: maoObraCSP + isaas + remuCom + admPessoas,
+    despAquisicao: S('4.1.02', '4.1.04', '4.1.06', '4.1.07', '4.1.08', '4.1.10',
+                     '4.1.11', '4.1.12', '4.1.13', '4.1.14', '4.1.15', '4.1.16', '4.1.17'),
+    leadBroker:    S('4.1.06'),
+    despExpansao:  S('4.1.18', '4.1.19', '4.1.20', '4.1.21', '4.1.22', '4.1.23'),
+    proLabore:     S('4.2.25', '4.2.26'),
+    growthRate,
+  }
+
+  return { months, hier, subtotais, exec, kpis, totalOperacional: op.length }
 }
