@@ -1,52 +1,58 @@
 /**
- * Proteção do DETALHE de folha (remuneração individual).
+ * Proteção do detalhe de PAGAMENTO INDIVIDUAL A PESSOA.
  *
  * O QUE PROTEGE
- * Linhas cuja categoria é remuneração/encargo de folha carregam, por
- * lançamento, o NOME da pessoa (`fornecedor`) e uma descrição que costuma
- * identificar a remuneração ("6/14 - Remuneração de Fulano"). Para quem não
- * tem `ver_folha_detalhe`, esses dois campos são substituídos por texto
- * neutro. Nada mais muda: valor, valorDRE, data, categoria, CC, situação,
+ * Linhas cuja categoria representa pagamento individual carregam, por
+ * lançamento, o NOME da pessoa (`fornecedor`) e uma descrição que a identifica
+ * ("6/14 - Remuneração de Fulano", "‹nome› 8 reuniões", nome seguido de CPF).
+ * Para quem não tem `ver_folha_detalhe`, esses dois campos são substituídos por
+ * texto neutro. Nada mais muda: valor, valorDRE, data, categoria, CC, situação,
  * conta e tipo passam intactos, para que os totais continuem conferindo.
  *
- * ⚠️ LISTA PENDENTE DE VALIDAÇÃO
- * A `lib/folha.ts` da branch antiga usava 13 prefixos com um comentário
- * admitindo que precisavam ser validados. Cruzei aquela lista com as 153
- * categorias reais do banco e ajustei três coisas, todas documentadas abaixo.
- * Enquanto o Felipe não validar, este é o único ponto a mudar — a lista está
- * isolada de propósito.
+ * O CRITÉRIO (decisão do Felipe, 2026-08-01)
+ * Não é a classificação contábil de "folha". É a exposição: protege-se o que
+ * revela nome de pessoa, CPF/CNPJ associado a pessoa, remuneração individual,
+ * comissão individual, prêmio ou bonificação individual, ou informação de
+ * desempenho pessoal. Por isso comissão e premiação entraram sem serem folha.
  *
- *   INCLUÍDAS que a lista antiga NÃO pegava (falsos negativos reais):
- *     4.1.02  Remuneração - Time Comercial Aquisição   ← presente no dado real
- *     4.1.05  Encargos sobre Folha Comercial
- *     3.2.03  ISAAS - Encargos sobre Folha
+ * O QUE NÃO É CRITÉRIO
+ *   • Nome do fornecedor. Não se classifica por quem aparece na linha.
+ *   • Busca textual por palavra. `6.2.01 Juros e Encargos s/ Empréstimos`
+ *     casaria com "encargos" e é despesa financeira — fica de fora. É o
+ *     lembrete permanente de por que a detecção é por PREFIXO de CÓDIGO.
+ *   • Compartilhar contraparte com uma linha protegida. A mesma pessoa aparece
+ *     legitimamente em reembolso, transporte e CSP; isso não protege a linha.
  *
- *   EXCLUÍDA que a lista antiga pegava por engano (falso positivo):
- *     3.1.01..3.1.05  CSP (Gerente/Coordenador/Operação) — é custo de serviço
- *       prestado, não remuneração individual. A antiga usava o prefixo '3.1'
- *       inteiro; aqui restringimos a 3.1.06/07/08, que são os ENCARGOS de folha.
- *     4.2.08  Variável Mão de Obra Administrativa — mantida FORA pelo mesmo
- *       motivo; se for remuneração individual, basta adicionar o prefixo.
- *
- *   NÃO INCLUÍDA apesar de casar com "encargos":
- *     6.2.01  Juros e Encargos s/ Empréstimos — é despesa financeira, não folha.
- *       Serve de lembrete de por que a detecção é por PREFIXO de código e não
- *       por palavra no nome: busca textual por "encargo" pegaria esta.
+ * FORA DA PROTEÇÃO, por decisão explícita:
+ *   3.1.01..3.1.05  CSP (Gerente/Coordenador/Operação) — custo de serviço
+ *     prestado. Só 3.1.06/07/08, os ENCARGOS de folha, entram.
+ *   2.3.01  Royalties [BR]
+ *   6.2.01  Juros e Encargos s/ Empréstimos
+ *   4.2.08  Variável Mão de Obra Administrativa
+ *   reembolsos e pagamentos comuns a fornecedores
  */
 
 /**
- * Prefixos de `cat1` considerados folha. A comparação é por prefixo do CÓDIGO
- * da categoria, nunca por palavra no nome — nome é livre e mudaria a proteção
- * sem ninguém perceber.
+ * Prefixos de `cat1` protegidos. Allowlist explícita de códigos: a comparação é
+ * por prefixo do CÓDIGO da categoria, nunca por palavra no nome — nome é livre
+ * e mudaria a proteção sem ninguém perceber.
+ *
+ * Este é o único ponto a alterar quando uma categoria entra ou sai. Antes de
+ * incluir qualquer uma, o critério exige levantar: nome completo da categoria,
+ * finalidade contábil, se o lançamento é pagamento individual a pessoa, se
+ * fornecedor e descrição identificam colaborador ou sócio, quantidade, valor e
+ * exemplos sanitizados.
  */
 export const PREFIXOS_FOLHA: readonly string[] = [
   '3.1.06', '3.1.07', '3.1.08',   // Encargos Folha CSP (Saber/Ter/Executar)
   '3.2.03',                        // ISAAS - Encargos sobre Folha
   '4.1.01', '4.1.02',              // Remuneração comercial
+  '4.1.04',                        // Comissão/Variável - Time Comercial Aquisição
   '4.1.05',                        // Encargos sobre Folha Comercial
   '4.2.01', '4.2.02', '4.2.03',    // Remunerações administrativas
   '4.2.04', '4.2.05', '4.2.06', '4.2.07',
   '4.2.09',                        // Encargos sobre Folha Administrativa
+  '4.2.22',                        // Premiações / Bonificações
   '4.2.25', '4.2.26',              // Pró-Labore (Sócios) + INSS s/ Pró-Labore
 ] as const
 
