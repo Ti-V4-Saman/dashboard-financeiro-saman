@@ -941,8 +941,8 @@ function DRESheet({
           </div>
           {dadosProtegidos && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
-              Alguns lançamentos de folha estão com contraparte e descrição
-              ocultas. Os valores e o total não foram alterados.
+              Alguns lançamentos estão com contraparte e descrição ocultas.
+              Os valores e o total não foram alterados.
             </div>
           )}
           <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>

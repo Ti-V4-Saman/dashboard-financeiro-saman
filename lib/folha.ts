@@ -47,8 +47,9 @@ export const PREFIXOS_FOLHA: readonly string[] = [
   '3.1.06', '3.1.07', '3.1.08',   // Encargos Folha CSP (Saber/Ter/Executar)
   '3.2.03',                        // ISAAS - Encargos sobre Folha
   '4.1.01', '4.1.02',              // Remuneração comercial
-  '4.1.04',                        // Comissão/Variável - Time Comercial Aquisição
+  '4.1.03', '4.1.04',              // Comissão/Variável (Coord. Receita + Time Aquisição)
   '4.1.05',                        // Encargos sobre Folha Comercial
+  '4.1.22',                        // Comissão - Renovação / Expansão
   '4.2.01', '4.2.02', '4.2.03',    // Remunerações administrativas
   '4.2.04', '4.2.05', '4.2.06', '4.2.07',
   '4.2.09',                        // Encargos sobre Folha Administrativa
@@ -57,7 +58,12 @@ export const PREFIXOS_FOLHA: readonly string[] = [
 ] as const
 
 export const CONTRAPARTE_PROTEGIDA = 'Dados protegidos'
-export const DESCRICAO_PROTEGIDA = 'Lançamento de folha protegido'
+/**
+ * Sem a palavra "folha": a proteção cobre comissão, premiação, bonificação e
+ * pró-labore, que não são folha contábil. O texto exibido não deve sugerir uma
+ * classificação que o critério já não usa.
+ */
+export const DESCRICAO_PROTEGIDA = 'Lançamento protegido'
 
 /** A categoria é de folha? Comparação por prefixo de código de `cat1`. */
 export function isCategoriaFolha(cat1: string | null | undefined): boolean {
