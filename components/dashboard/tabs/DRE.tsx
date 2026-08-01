@@ -8,8 +8,8 @@ import { useAccess } from '@/lib/useAccess'
 import { protegerDetalheFolha } from '@/lib/folha'
 import { isAggClientEnabled } from '@/lib/feature-aggregation'
 import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
-import { aggResumoDRE, type ResumoDRE } from '@/lib/aggregations/dre'
-import { fR, fDt, mLbl, parseCatHier } from '@/lib/utils'
+import { aggResumoDRE, matcherFromLinhaRef, type ResumoDRE } from '@/lib/aggregations/dre'
+import { fR, fDt, mLbl } from '@/lib/utils'
 import {
   Sheet,
   SheetContent,
@@ -185,45 +185,34 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
 }
 
 // ─── Matcher para o modal de conferência ──────────────────────────────────────
-// Espelha as fórmulas que constroem cada `row.vals` em build-dreRows. Se a fórmula
-// mudar aqui ou lá, mudar nos dois lugares — senão o rodapé do modal deixa de
-// bater com a célula.
+/**
+ * Traduz a linha clicada num predicado — DELEGANDO para
+ * `matcherFromLinhaRef` de lib/aggregations/dre.
+ *
+ * Antes esta função carregava sua própria cópia da tabela de subtotais, com os
+ * limites 2.99 / 3.99 / 4.99 / 5.99 / 6.99 repetidos, e o comentário aqui
+ * pedia para "mudar nos dois lugares". Não deu certo: Lucro Líquido ficou como
+ * `() => true` enquanto a célula usava `groupSum(col, 99)`, e clicar na linha
+ * listava o grupo 'Outros' inteiro — R$ 792.066,84 a mais em 2026.
+ *
+ * Agora existe uma regra só (`grupoDentroDoLimite`), usada tanto para calcular
+ * a célula quanto para montar o detalhe. Os dois caminhos da flag também
+ * passam a produzir exatamente a mesma população.
+ */
 function matcherForRow(row: DRERow): (r: Lancamento) => boolean {
   switch (row.kind) {
     case 'l1':
-      return r => parseCatHier(r.cat1).l1 === row.l1Key
+      return matcherFromLinhaRef({ kind: 'l1', l1: row.l1Key ?? '' })
     case 'l2':
-      return r => {
-        const h = parseCatHier(r.cat1)
-        return h.l1 === row.l1Key && h.l2 === row.l2Key
-      }
+      return matcherFromLinhaRef({ kind: 'l2', l1: row.l1Key ?? '', l2: row.l2Key ?? '' })
     case 'l3':
-      return r => r.cat1 === row.label
+      return matcherFromLinhaRef({ kind: 'l3', cat1: row.label })
     case 'subtotal':
     case 'ebitda':
     case 'resultado':
-      switch (row.id) {
-        case '__recLiq__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 2.99
-        case '__lubruto__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 3.99
-        case '__margContrib__':
-          return r => {
-            const h = parseCatHier(r.cat1)
-            const p = numPrefix(h.l1)
-            return p <= 3.99 || (h.l1 === '4 — Despesas' && h.l2 === '4.1')
-          }
-        case '__ebitda__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 4.99
-        case '__ebit__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 5.99
-        case '__ebt__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 6.99
-        case '__lucroliq__':
-          return () => true
-        default:
-          return () => false
-      }
+      // `matcherFromLinhaRef` devolve `() => false` para id fora da allowlist,
+      // que é o mesmo default de antes.
+      return matcherFromLinhaRef({ kind: 'subtotal', id: row.id })
     default:
       return () => false
   }

@@ -32,20 +32,54 @@ import type { Lancamento } from '@/lib/types'
  * expressão, nome de coluna ou fragmento de SQL do cliente entra no caminho.
  */
 
+// ── O limite de grupo, num lugar só ──────────────────────────────────────────
+
+/**
+ * Teto de prefixo do último subtotal (Lucro Líquido).
+ *
+ * Existe como constante porque o grupo `Outros` — o que `parseCatHier` devolve
+ * para categoria fora do plano 1..7 — tem prefixo 999 e precisa ficar de fora.
+ * `Outros` guarda movimentação patrimonial e de financiamento (distribuição de
+ * lucros, aporte de capital, parcelas de empréstimo), que não é linha de DRE.
+ */
+export const LIMITE_GRUPO_DRE = 99
+
+/**
+ * O grupo L1 entra no subtotal até `maxPfx`?
+ *
+ * ESTA É A ÚNICA REGRA. `groupSum` a aplica sobre os rótulos da hierarquia para
+ * calcular a CÉLULA; `matcherAteGrupo` a aplica sobre o lançamento para montar
+ * o DETALHE. Enquanto as duas passarem por aqui, a linha clicada não pode
+ * listar população diferente da que gerou o número — que foi exatamente o que
+ * aconteceu enquanto Lucro Líquido usava `() => true`.
+ */
+export function grupoDentroDoLimite(l1: string, maxPfx: number): boolean {
+  return numPrefix(l1) <= maxPfx
+}
+
+/** Versão por lançamento da mesma regra. */
+export function matcherAteGrupo(maxPfx: number): (r: Lancamento) => boolean {
+  return r => grupoDentroDoLimite(parseCatHier(r.cat1).l1, maxPfx)
+}
+
 // ── Allowlist de linhas ──────────────────────────────────────────────────────
 
-/** Subtotais: id fixo → faixa de prefixo. Espelha matcherForRow (DRE.tsx:199-219). */
+/**
+ * Subtotais: id fixo → predicado. Cada um espelha a fórmula que produz a
+ * célula correspondente em `aggResumoDRE.subtotais`, e agora pelo mesmo
+ * `grupoDentroDoLimite` — não por um número repetido de cada lado.
+ */
 const SUBTOTAIS: Record<string, (r: Lancamento) => boolean> = {
-  __recLiq__:      r => numPrefix(parseCatHier(r.cat1).l1) <= 2.99,
-  __lubruto__:     r => numPrefix(parseCatHier(r.cat1).l1) <= 3.99,
+  __recLiq__:      matcherAteGrupo(2.99),
+  __lubruto__:     matcherAteGrupo(3.99),
   __margContrib__: r => {
     const h = parseCatHier(r.cat1)
-    return numPrefix(h.l1) <= 3.99 || (h.l1 === '4 — Despesas' && h.l2 === '4.1')
+    return grupoDentroDoLimite(h.l1, 3.99) || (h.l1 === '4 — Despesas' && h.l2 === '4.1')
   },
-  __ebitda__:    r => numPrefix(parseCatHier(r.cat1).l1) <= 4.99,
-  __ebit__:      r => numPrefix(parseCatHier(r.cat1).l1) <= 5.99,
-  __ebt__:       r => numPrefix(parseCatHier(r.cat1).l1) <= 6.99,
-  __lucroliq__:  () => true,
+  __ebitda__:   matcherAteGrupo(4.99),
+  __ebit__:     matcherAteGrupo(5.99),
+  __ebt__:      matcherAteGrupo(6.99),
+  __lucroliq__: matcherAteGrupo(LIMITE_GRUPO_DRE),
 }
 
 export const SUBTOTAL_IDS = Object.keys(SUBTOTAIS)
@@ -393,8 +427,10 @@ export function aggResumoDRE(data: readonly Lancamento[], regime: string): Resum
     return s
   }
 
+  // Mesma regra do detalhe (`matcherAteGrupo`), aplicada sobre os rótulos.
   const groupSum = (col: string, maxPfx: number): number =>
-    estrutura.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + getL1(col, h.l1), 0)
+    estrutura.filter(h => grupoDentroDoLimite(h.l1, maxPfx))
+      .reduce((s, h) => s + getL1(col, h.l1), 0)
 
   const makeVals = (fn: (col: string) => number) => cols.map(fn)
 
@@ -418,7 +454,7 @@ export function aggResumoDRE(data: readonly Lancamento[], regime: string): Resum
     ebitda:      makeVals(col => groupSum(col, 4.99)),
     ebit:        makeVals(col => groupSum(col, 5.99)),
     ebt:         makeVals(col => groupSum(col, 6.99)),
-    lucroLiq:    makeVals(col => groupSum(col, 99)),
+    lucroLiq:    makeVals(col => groupSum(col, LIMITE_GRUPO_DRE)),
   }
 
   // ── KPIs executivos ────────────────────────────────────────────────────────
@@ -429,7 +465,7 @@ export function aggResumoDRE(data: readonly Lancamento[], regime: string): Resum
   const despCom  = getL2('__acc__', '4 — Despesas', '4.1')
   const ebitda   = groupSum('__acc__', 4.99)
   const ebit     = groupSum('__acc__', 5.99)
-  const lucroLiq = groupSum('__acc__', 99)
+  const lucroLiq = groupSum('__acc__', LIMITE_GRUPO_DRE)
 
   // Growth Rate: dois últimos meses VISÍVEIS, não os dois últimos do calendário.
   let growthRate: number | null = null
