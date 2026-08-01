@@ -52,7 +52,14 @@ export async function GET(request: Request) {
       ? hojeParam
       : new Date().toISOString().slice(0, 10)
 
-    const cru = await fetchLancamentos({ de, ate, regime })
+    // Permissão de folha calculada no SERVIDOR, como nas demais rotas.
+    // Este endpoint só devolve agregados — nenhum campo de texto por
+    // lançamento sai daqui — então mascarar é no-op para o payload. Passa
+    // mesmo assim: `true` fixo aqui viraria a exceção que alguém copia para
+    // uma rota que devolve detalhe. A permissão real é sempre a resposta certa.
+    const podeVerFolhaDetalhada = acc.isAdmin || acc.verFolhaDetalhe === true
+
+    const cru = await fetchLancamentos({ de, ate, regime, podeVerFolhaDetalhada })
 
     return NextResponse.json(
       aggVisaoGeral(cru, parseFiltros(sp), regime, hoje, { de: de ?? '', ate: ate ?? '' }),

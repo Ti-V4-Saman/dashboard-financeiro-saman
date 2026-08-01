@@ -77,6 +77,60 @@ export function mascararDescricao(): string {
   return DESCRICAO_PROTEGIDA
 }
 
+/**
+ * Lançamento protegível — o formato que sai de `normalizeRow` e trafega em
+ * `/api/financeiro`. Nomes de campo diferem do detalhe da DRE (`cat1` em vez de
+ * `categoria`, `fornecedor` em vez de `contraparte`), por isso a interface
+ * separada: converter de um para o outro só para reusar uma função seria mais
+ * fácil de errar do que ter as duas.
+ */
+export interface LancamentoProtegivel {
+  cat1: string
+  fornecedor: string
+  desc: string
+}
+
+/**
+ * Protege UM lançamento na origem, antes de qualquer serialização.
+ *
+ * Mascara `fornecedor` E `desc` juntos, sempre. `desc` não pode ficar de fora:
+ * em `normalizeRow` ele é `row.desc || row.fornecedor`, ou seja, quando a
+ * descrição está vazia o próprio nome ocupa o campo. Mascarar só um dos dois
+ * deixaria o nome visível na metade dos casos.
+ *
+ * Devolve a MESMA referência quando nada muda, para o chamador contar quantas
+ * linhas foram efetivamente mascaradas por identidade.
+ */
+export function protegerLancamentoFolha<T extends LancamentoProtegivel>(
+  l: T,
+  podeVerFolhaDetalhada: boolean,
+): T {
+  if (podeVerFolhaDetalhada) return l
+  if (!isCategoriaFolha(l.cat1)) return l
+  return { ...l, fornecedor: mascararContraparte(), desc: mascararDescricao() }
+}
+
+/**
+ * Protege a lista inteira e devolve quantas linhas foram mascaradas.
+ *
+ * Não muta a entrada, não reordena, não descarta nada: quantidade, ordem,
+ * valores, datas, categorias, CCs, tipos e situações saem intactos. Só os dois
+ * campos de texto das linhas de folha mudam.
+ */
+export function protegerLancamentos<T extends LancamentoProtegivel>(
+  linhas: readonly T[],
+  podeVerFolhaDetalhada: boolean,
+): { rows: T[]; mascaradas: number } {
+  if (podeVerFolhaDetalhada) return { rows: linhas as T[], mascaradas: 0 }
+  let mascaradas = 0
+  const rows = linhas.map(l => {
+    const p = protegerLancamentoFolha(l, podeVerFolhaDetalhada)
+    if (p !== l) mascaradas++
+    return p
+  })
+  return { rows, mascaradas }
+}
+
 /** Linha de detalhe protegível — o formato que o Sheet da DRE consome. */
 export interface LinhaProtegivel {
   categoria: string

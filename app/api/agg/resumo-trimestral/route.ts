@@ -67,7 +67,14 @@ export async function GET(request: Request) {
     const clienteSolicitouMetas = sp.get('incluirMetas') !== 'false'
     const incluirMetasEfetivo = clienteSolicitouMetas && podeIncluirMetas
 
-    const brutos = await fetchLancamentos({ de, ate, regime: 'competencia' })
+      // Permissão de folha calculada no SERVIDOR, como nas demais rotas.
+      // Este endpoint só devolve agregados — nenhum campo de texto por
+      // lançamento sai daqui — então mascarar é no-op para o payload. Passa
+      // mesmo assim: `true` fixo aqui viraria a exceção que alguém copia para
+      // uma rota que devolve detalhe. A permissão real é sempre a resposta certa.
+      const podeVerFolhaDetalhada = acc.isAdmin || acc.verFolhaDetalhe === true
+
+    const brutos = await fetchLancamentos({ de, ate, regime: 'competencia', podeVerFolhaDetalhada })
     const data = prepararDados(brutos, parseFiltros(sp))
 
     // Só consulta ca.metas se a autorização EFETIVA permitir. Sem permissão,

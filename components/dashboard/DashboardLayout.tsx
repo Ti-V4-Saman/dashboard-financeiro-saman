@@ -150,9 +150,11 @@ export function DashboardLayout({
             }}
           >
             {/* TODO Fase 2: telas ACOPLADAS (visao/dre/cc/comparativo/lancamentos)
-                ainda recebem o array BRUTO via /api/financeiro (prop filteredData/
-                allData). Esconder-aba + bloqueio aqui é só UI — o dado bruto ainda
-                desce. A proteção server-side real (agregação por permissão) é Fase 2. */}
+                ainda recebem o array via /api/financeiro (prop filteredData/allData),
+                e esconder-aba + bloqueio aqui continua sendo só UI. O que MUDOU: o
+                dado nominal de folha não desce mais para quem não tem
+                ver_folha_detalhe — /api/financeiro mascara na origem. Falta a
+                agregação por permissão, que reduz o resto do array. */}
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
             {activeTab === 'bus'         && <BUs filters={filters} />}

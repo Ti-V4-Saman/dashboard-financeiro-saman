@@ -18,9 +18,10 @@ export const dynamic = 'force-dynamic'
  *
  * FOLHA: `podeVerFolhaDetalhada` é calculado AQUI, no servidor, a partir de
  * getUserAccess(). Nenhuma flag do cliente influencia — não existe parâmetro
- * para isso, de propósito. A proteção é aplicada antes de serializar, então o
- * payload que sai pela rede já está mascarado; não há campo paralelo com o
- * valor original.
+ * para isso, de propósito. A permissão desce para `fetchLancamentos`, que já
+ * devolve a folha mascarada, e `aggDetalheDRE` aplica a mesma proteção sobre o
+ * resultado. As duas camadas são idempotentes: mascarar o que já está
+ * mascarado não muda nada, e nenhuma depende da outra estar correta.
  *
  * LOG: em erro registramos só o linhaId e a mensagem. Contraparte e descrição
  * nunca entram em log.
@@ -61,7 +62,7 @@ export async function GET(request: Request) {
 
     // Os 5 filtros do dash entram ANTES do matcher, como no caminho legado
     // (lá o componente recebe `data` já filtrado pelo DashboardLayout).
-    const cru = await fetchLancamentos({ de, ate, regime })
+    const cru = await fetchLancamentos({ de, ate, regime, podeVerFolhaDetalhada })
     const data = applyFiltros(cru, parseFiltros(sp))
 
     return NextResponse.json(

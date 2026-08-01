@@ -47,6 +47,21 @@ const SCREENS_QUE_USAM: Screen[] = [
  * chamá-la de um lugar novo sem checar nada. O guard fica na porta de entrada.
  * Ele também NÃO depende de AGG_BACKEND: a flag decide quem agrega, nunca
  * quem pode ver.
+ *
+ * ── Proteção de folha (Fase 2, fechamento do Bloco E) ──────────────────────
+ * `SCREENS_QUE_USAM` libera quem tiver QUALQUER uma das cinco telas. Isso está
+ * certo para o acesso ao dataset, mas não para o dado nominal: um usuário só
+ * com `visao_geral` recebia aqui o nome de cada pessoa da folha e a descrição
+ * da remuneração, sem nunca ter tido `ver_folha_detalhe`.
+ *
+ * A partir daqui, `podeVerFolhaDetalhada` é decidido NESTA rota, a partir do
+ * mesmo `getUserAccess()` que já roda para o guard, e desce para
+ * `fetchLancamentos`, que mascara antes de serializar. Não existe query param
+ * equivalente — de propósito: o cliente não define a própria permissão.
+ *
+ * O que NÃO muda: guard, status, contrato, filtros, período, regime, contas,
+ * cache, ordem, valores, valorDRE e quantidade de lançamentos. Para quem tem a
+ * permissão, o payload é byte a byte o mesmo de antes.
  */
 export async function GET(request: Request) {
   try {
@@ -64,10 +79,14 @@ export async function GET(request: Request) {
     const ate    = searchParams.get('ate')    || null
     const regime = searchParams.get('regime') || 'competencia'
 
+    // Regra oficial: admin sempre vê; não-admin depende de ver_folha_detalhe.
+    // Reusa o `access` já carregado acima — nenhuma consulta extra.
+    const podeVerFolhaDetalhada = access.isAdmin || access.verFolhaDetalhe === true
+
     // Sequencial (não Promise.all) para preservar exatamente a ordem de
     // execução da versão anterior. A query de lançamentos não tem ORDER BY;
     // manter o mesmo caminho evita qualquer chance de ordem diferente.
-    const lancamentos = await fetchLancamentos({ de, ate, regime })
+    const lancamentos = await fetchLancamentos({ de, ate, regime, podeVerFolhaDetalhada })
     const listaContas = await fetchContas()
 
     return NextResponse.json({ lancamentos, contas: listaContas }, {

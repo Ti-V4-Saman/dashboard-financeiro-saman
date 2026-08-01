@@ -1,6 +1,7 @@
 import { getPool } from '@/lib/db'
 import { parseDataLocal } from '@/lib/utils'
 import { applyFiltros, EMPTY_FILTROS, type FinanceiroFiltros } from '@/lib/financeiro-filtros'
+import { protegerLancamentos } from '@/lib/folha'
 import type { Lancamento } from '@/lib/types'
 
 /**
@@ -13,9 +14,12 @@ import type { Lancamento } from '@/lib/types'
  * SQL é idêntico, justamente para que ligar a agregação não mude um centavo.
  *
  * O QUE ISTO NÃO É
- *   • Não faz autorização. O guard continua na rota (`SCREENS_QUE_USAM` em
+ *   • Não DECIDE autorização. O guard continua na rota (`SCREENS_QUE_USAM` em
  *     /api/financeiro; `requireScreen` nos /api/agg/*). Uma camada de query
  *     que decidisse permissão seria fácil de chamar sem querer sem checar.
+ *     Mas APLICA a proteção de folha: `podeVerFolhaDetalhada` é decidido na
+ *     rota, a partir de `getUserAccess()`, e o efeito acontece aqui — no único
+ *     ponto por onde todo lançamento passa antes de virar JSON.
  *   • Não conhece a flag AGG_BACKEND. Os dois caminhos leem os MESMOS dados
  *     daqui; a flag só decide quem agrega, não o que é lido.
  *   • Não duplica regra de regime. Exclusão de transferência, de
@@ -40,6 +44,19 @@ export interface FetchLancamentosArgs {
   regime: string
   /** Os 5 filtros do usuário. Omitido = sem filtro. */
   filtros?: FinanceiroFiltros
+  /**
+   * Pode ver contraparte e descrição dos lançamentos de folha?
+   *
+   * OBRIGATÓRIO e sem default, de propósito. Um default permissivo faria
+   * qualquer chamada nova vazar por esquecimento; um default restritivo
+   * esconderia dado de quem tem direito, silenciosamente. Sendo obrigatório, o
+   * compilador recusa a chamada e quem escreve precisa decidir na hora — o
+   * fail-closed acontece antes de rodar, não em produção.
+   *
+   * O valor tem que vir de `getUserAccess()` no servidor. Nunca de query
+   * param, header, cookie ou body: o cliente não define a própria permissão.
+   */
+  podeVerFolhaDetalhada: boolean
 }
 
 /** Linha crua devolvida pelo SQL, antes da normalização. */
@@ -250,15 +267,26 @@ function normalizeRow(row: RawRow): Lancamento {
 }
 
 /**
- * Lançamentos do período, já com os 5 filtros do usuário aplicados.
- * `data` vem como string 'YYYY-MM-DD'.
+ * Lançamentos do período, já com os 5 filtros do usuário aplicados e já com a
+ * folha protegida quando for o caso. `data` vem como string 'YYYY-MM-DD'.
+ *
+ * A proteção acontece AQUI, logo depois de normalizar e antes de qualquer
+ * serialização — é o ponto por onde todo lançamento passa. Protegesse-se na
+ * rota, cada rota nova precisaria lembrar; protegesse-se no componente, o dado
+ * já teria chegado ao navegador.
+ *
+ * A ordem em relação a `applyFiltros` é indiferente para o resultado: os 5
+ * filtros olham categoria, CC, tipo, situação e conta, nunca `desc` ou
+ * `fornecedor`. Mascarar antes é a escolha defensiva — a partir daí não existe
+ * mais o valor original em memória para vazar por engano.
  */
 export async function fetchLancamentos(
-  { de, ate, regime, filtros }: FetchLancamentosArgs,
+  { de, ate, regime, filtros, podeVerFolhaDetalhada }: FetchLancamentosArgs,
 ): Promise<Lancamento[]> {
   const { rows } = await getPool().query<RawRow>(buildQuery(regime), [de, ate])
   const normalized = rows.map(normalizeRow)
-  return applyFiltros(normalized, filtros ?? EMPTY_FILTROS)
+  const { rows: protegidos } = protegerLancamentos(normalized, podeVerFolhaDetalhada)
+  return applyFiltros(protegidos, filtros ?? EMPTY_FILTROS)
 }
 
 /**

@@ -336,10 +336,11 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   const [mesSel, setMesSel] = useState<string | undefined>(undefined)
   const [open, setOpen] = useState(false)
 
-  // Proteção de folha no caminho legado. O array bruto já está no browser
-  // (vem de /api/financeiro), então isto é defesa em profundidade, não a
-  // correção definitiva — ver relatório do Bloco E sobre /api/financeiro.
-  // Mesmo assim vale: nenhum nome de folha chega à tela de quem não pode ver.
+  // Proteção de folha no caminho legado, agora como DEFESA EM PROFUNDIDADE.
+  // /api/financeiro já mascara na origem (lib/financeiro-query), então para
+  // quem não tem a permissão `data` chega aqui sem nome nenhum e este passo é
+  // no-op. Fica porque é barato e porque cobre qualquer fonte futura que
+  // esqueça de proteger — mascarar o que já está mascarado não muda nada.
   const { verFolhaDetalhe } = useAccess()
 
   const { linhasModal, dadosProtegidos } = useMemo(() => {
