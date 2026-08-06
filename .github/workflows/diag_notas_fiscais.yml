@@ -1,0 +1,87 @@
+name: Diagnóstico Notas Fiscais
+
+# TEMPORÁRIO — somente diagnóstico. Nenhuma escrita em tabelas de dados.
+# Só workflow_dispatch: nunca roda por schedule, push ou pull_request.
+on:
+  workflow_dispatch:
+    inputs:
+      numero_nota_manual:
+        description: 'Número (NFS-e/RPS) de uma nota que você acredita ser escriturada — opcional'
+        required: false
+        default: ''
+      numero_nota_emitida:
+        description: 'Número (NFS-e/RPS) de uma nota emitida pelo botão Emitir — opcional'
+        required: false
+        default: ''
+      venda_id_manual:
+        description: 'UUID da venda da nota escriturada — opcional'
+        required: false
+        default: ''
+      venda_id_emitida:
+        description: 'UUID da venda da nota emitida — opcional'
+        required: false
+        default: ''
+      data_de:
+        description: 'Início da janela (YYYY-MM-DD). Vazio = 180 dias atrás'
+        required: false
+        default: ''
+      data_ate:
+        description: 'Fim da janela (YYYY-MM-DD). Vazio = hoje'
+        required: false
+        default: ''
+
+# Permissão mínima: só ler o próprio repositório para o checkout.
+permissions:
+  contents: read
+
+# MESMO grupo do ETL. cancel-in-progress: false => se o sync.yml estiver
+# rodando, este job ENFILEIRA e espera; nunca cancela o ETL.
+concurrency:
+  group: etl-contaazul
+  cancel-in-progress: false
+
+jobs:
+  diag:
+    name: Diagnóstico NFS-e (somente leitura)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Instalar apenas as dependências necessárias
+        run: pip install "requests>=2.31.0" "psycopg2-binary>=2.9.9"
+
+      - name: Executar diagnóstico
+        env:
+          # Mesmos secrets do ETL. CA_REFRESH_TOKEN entra apenas como
+          # fallback já previsto por etl/auth.py — não é lido nem impresso
+          # pelo script de diagnóstico.
+          DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID:      ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET:  ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN:  ${{ secrets.CA_REFRESH_TOKEN }}
+          DIAG_NUMERO_NOTA_MANUAL:  ${{ inputs.numero_nota_manual }}
+          DIAG_NUMERO_NOTA_EMITIDA: ${{ inputs.numero_nota_emitida }}
+          DIAG_VENDA_ID_MANUAL:     ${{ inputs.venda_id_manual }}
+          DIAG_VENDA_ID_EMITIDA:    ${{ inputs.venda_id_emitida }}
+          DIAG_DATA_DE:             ${{ inputs.data_de }}
+          DIAG_DATA_ATE:            ${{ inputs.data_ate }}
+        run: python -m etl.diagnostics.diag_notas_fiscais
+
+      - name: Upload do relatório sanitizado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-notas-fiscais-${{ github.run_id }}
+          path: |
+            diag_nf_report.json
+            diag_nf_report.md
+          retention-days: 7
+          if-no-files-found: warn

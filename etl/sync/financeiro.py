@@ -116,6 +116,30 @@ def _int(v: Any) -> int:
     except (TypeError, ValueError):
         return 0
 
+def _bool(v: Any) -> Optional[bool]:
+    """
+    Booleano de TRÊS estados: True, False e None.
+
+    None significa "a API não informou", e é diferente de False. Usado por
+    escriturado_manualmente, onde False = emitida pelo Conta Azul e None =
+    origem não identificada. Nunca converter ausência em False aqui.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "t", "1", "sim"):
+            return True
+        if s in ("false", "f", "0", "nao", "não"):
+            return False
+        return None
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return None
+
+
 def _id(obj: Any) -> Optional[str]:
     if isinstance(obj, dict):
         v = obj.get("id") or obj.get("uuid")
@@ -402,6 +426,11 @@ def _map_nota_fiscal(raw: Dict[str, Any]) -> Dict[str, Any]:
         "numero_nfse":      _int(raw.get("numero_nfse")),
         "data_competencia": _str(raw.get("data_competencia") or "") or None,
         "nome_cliente":     _str(raw.get("nome_cliente") or ""),
+        # ORIGEM da nota — independente do status. Fonte da verdade exclusiva:
+        # o campo escriturado_manualmente da API. Não inferir de status, data,
+        # informacao_transmissao ou qualquer outro campo. Ausência vira None
+        # (origem não identificada), nunca False.
+        "escriturado_manualmente": _bool(raw.get("escriturado_manualmente")),
     }
 
 

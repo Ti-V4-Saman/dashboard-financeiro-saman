@@ -1,0 +1,53 @@
+name: Full Sync Contratos
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: etl-contaazul
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Full sync apenas contratos
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID: ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET: ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN: ${{ secrets.CA_REFRESH_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import os, sys, logging
+          sys.path.insert(0, ".")
+          logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+          from etl.auth import get_access_token
+          from etl.client import ContaAzulClient
+          from etl.db import get_connection
+          from etl.sync.contratos import sync_contratos
+
+          token = get_access_token()
+          client = ContaAzulClient(token)
+          conn = get_connection()
+
+          n = sync_contratos(conn, client, mode="full")
+          print(f"✅ {n} contrato(s) sincronizados em modo full")
+          conn.close()
+          EOF
