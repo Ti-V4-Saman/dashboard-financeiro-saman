@@ -143,6 +143,55 @@ export function protegerLancamentos<T extends LancamentoProtegivel>(
   return { rows, mascaradas }
 }
 
+/**
+ * Lançamento da tela de BUs — `/api/financeiro/bus` monta o próprio SQL e usa
+ * um terceiro conjunto de nomes de campo (`categoria_nome`, `contraparte_nome`,
+ * `descricao`).
+ *
+ * São três formatos, mas UMA regra: os três protetores decidem por
+ * `isCategoriaFolha` e escrevem `CONTRAPARTE_PROTEGIDA`/`DESCRICAO_PROTEGIDA`.
+ * O que poderia divergir — quais categorias entram e que texto sai — está
+ * declarado uma vez só. Os invólucros só traduzem nome de campo.
+ */
+export interface LancamentoBUProtegivel {
+  categoria_nome: string
+  contraparte_nome: string
+  descricao: string
+}
+
+/** Protege UM lançamento da rota de BUs, antes de qualquer serialização. */
+export function protegerLancamentoBU<T extends LancamentoBUProtegivel>(
+  l: T,
+  podeVerFolhaDetalhada: boolean,
+): T {
+  if (podeVerFolhaDetalhada) return l
+  if (!isCategoriaFolha(l.categoria_nome)) return l
+  return { ...l, contraparte_nome: mascararContraparte(), descricao: mascararDescricao() }
+}
+
+/**
+ * Protege a lista da rota de BUs e devolve quantas linhas mudaram.
+ *
+ * Aplicada sobre as linhas CRUAS, logo depois da query: assim KPIs, evolução,
+ * tops e agrupamento por BU são calculados sobre a mesma coleção que vai para o
+ * JSON, e não existe caminho em que o valor original escape por um agregado.
+ * Nenhum desses cálculos lê `descricao` ou `contraparte_nome`, então mascarar
+ * antes não muda um número — só garante que o original não sobreviva.
+ */
+export function protegerLancamentosBU<T extends LancamentoBUProtegivel>(
+  linhas: readonly T[],
+  podeVerFolhaDetalhada: boolean,
+): { rows: T[]; mascaradas: number } {
+  if (podeVerFolhaDetalhada) return { rows: linhas as T[], mascaradas: 0 }
+  let mascaradas = 0
+  const rows = linhas.map(l => {
+    const p = protegerLancamentoBU(l, podeVerFolhaDetalhada)
+    if (p !== l) mascaradas++
+    return p
+  })
+  return { rows, mascaradas }
+}
+
 /** Linha de detalhe protegível — o formato que o Sheet da DRE consome. */
 export interface LinhaProtegivel {
   categoria: string
