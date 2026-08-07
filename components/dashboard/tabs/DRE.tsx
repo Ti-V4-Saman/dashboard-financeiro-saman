@@ -1,9 +1,15 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import useSWR from 'swr'
 import type { Lancamento, Filters } from '@/lib/types'
-import { filtraOperacional, detalheDRE } from '@/lib/financeiro/regime'
-import { fR, fDt, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
+import { detalheDRE } from '@/lib/financeiro/regime'
+import { useAccess } from '@/lib/useAccess'
+import { protegerDetalheFolha } from '@/lib/folha'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import { aggResumoDRE, matcherFromLinhaRef, type ResumoDRE } from '@/lib/aggregations/dre'
+import { fR, fDt, mLbl } from '@/lib/utils'
 import {
   Sheet,
   SheetContent,
@@ -179,45 +185,34 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
 }
 
 // ─── Matcher para o modal de conferência ──────────────────────────────────────
-// Espelha as fórmulas que constroem cada `row.vals` em build-dreRows. Se a fórmula
-// mudar aqui ou lá, mudar nos dois lugares — senão o rodapé do modal deixa de
-// bater com a célula.
+/**
+ * Traduz a linha clicada num predicado — DELEGANDO para
+ * `matcherFromLinhaRef` de lib/aggregations/dre.
+ *
+ * Antes esta função carregava sua própria cópia da tabela de subtotais, com os
+ * limites 2.99 / 3.99 / 4.99 / 5.99 / 6.99 repetidos, e o comentário aqui
+ * pedia para "mudar nos dois lugares". Não deu certo: Lucro Líquido ficou como
+ * `() => true` enquanto a célula usava `groupSum(col, 99)`, e clicar na linha
+ * listava o grupo 'Outros' inteiro — R$ 792.066,84 a mais em 2026.
+ *
+ * Agora existe uma regra só (`grupoDentroDoLimite`), usada tanto para calcular
+ * a célula quanto para montar o detalhe. Os dois caminhos da flag também
+ * passam a produzir exatamente a mesma população.
+ */
 function matcherForRow(row: DRERow): (r: Lancamento) => boolean {
   switch (row.kind) {
     case 'l1':
-      return r => parseCatHier(r.cat1).l1 === row.l1Key
+      return matcherFromLinhaRef({ kind: 'l1', l1: row.l1Key ?? '' })
     case 'l2':
-      return r => {
-        const h = parseCatHier(r.cat1)
-        return h.l1 === row.l1Key && h.l2 === row.l2Key
-      }
+      return matcherFromLinhaRef({ kind: 'l2', l1: row.l1Key ?? '', l2: row.l2Key ?? '' })
     case 'l3':
-      return r => r.cat1 === row.label
+      return matcherFromLinhaRef({ kind: 'l3', cat1: row.label })
     case 'subtotal':
     case 'ebitda':
     case 'resultado':
-      switch (row.id) {
-        case '__recLiq__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 2.99
-        case '__lubruto__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 3.99
-        case '__margContrib__':
-          return r => {
-            const h = parseCatHier(r.cat1)
-            const p = numPrefix(h.l1)
-            return p <= 3.99 || (h.l1 === '4 — Despesas' && h.l2 === '4.1')
-          }
-        case '__ebitda__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 4.99
-        case '__ebit__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 5.99
-        case '__ebt__':
-          return r => numPrefix(parseCatHier(r.cat1).l1) <= 6.99
-        case '__lucroliq__':
-          return () => true
-        default:
-          return () => false
-      }
+      // `matcherFromLinhaRef` devolve `() => false` para id fora da allowlist,
+      // que é o mesmo default de antes.
+      return matcherFromLinhaRef({ kind: 'subtotal', id: row.id })
     default:
       return () => false
   }
@@ -240,82 +235,59 @@ function periodoLabel(mes: string | undefined, dateFrom?: string, dateTo?: strin
   return '—'
 }
 
+/**
+ * Placeholder enquanto a resposta agregada não chegou. `totalOperacional: 0`
+ * faz a tela cair no estado vazio, que é o mesmo que ela mostra quando o
+ * período realmente não tem lançamento — transitório, e o `keepPreviousData`
+ * do SWR evita que reapareça a cada troca de filtro.
+ */
+const RESUMO_VAZIO: ResumoDRE = {
+  months: [],
+  hier: [],
+  subtotais: {
+    recBruta: [], recLiq: [], lucroBruto: [], margContrib: [],
+    ebitda: [], ebit: [], ebt: [], lucroLiq: [],
+  },
+  exec: {
+    recOp: 0, recFin: 0, recBruta: 0, recLiq: 0, lubruto: 0,
+    margContrib: 0, ebitda: 0, ebit: 0, lucroLiq: 0, growthRate: null,
+  },
+  kpis: {
+    recOp: 0, recLiq: 0, lubruto: 0, margContrib: 0, ebitda: 0, ebit: 0,
+    lucroLiq: 0, deducoes: 0, csp: 0, terceiros: 0, despCom: 0, despAdmin: 0,
+    despGerais: 0, gastosPessoas: 0, despAquisicao: 0, leadBroker: 0,
+    despExpansao: 0, proLabore: 0, growthRate: null,
+  },
+  totalOperacional: 0,
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }) {
-  const op = useMemo(
-    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
-    [data, filters?.regime]
+  const aggOn = isAggClientEnabled()
+  const regime = filters?.regime ?? 'competencia'
+
+  // ── Os dois caminhos da flag chamam a MESMA função ────────────────────────
+  // `aggResumoDRE` concentra filtraOperacional, a matriz mês×categoria, a
+  // hierarquia ordenada, os oito subtotais, os KPIs executivos e os inferiores.
+  // Com a flag ON ela roda no servidor; com OFF, aqui no browser sobre o array
+  // que o DashboardLayout já passa por prop. Uma implementação só.
+  const aggUrl = useMemo(
+    () => (aggOn && filters ? `/api/agg/dre?${buildAggQuery(filters)}` : null),
+    [aggOn, filters],
+  )
+  const { data: aggResp } = useSWR<ResumoDRE>(aggUrl, aggFetcher, { keepPreviousData: true })
+
+  const local = useMemo(
+    () => (aggOn ? null : aggResumoDRE(data, regime)),
+    [aggOn, data, regime],
   )
 
-  const months = useMemo(() => getMonths(op), [op])
-  const cols   = useMemo(() => [...months, '__acc__'], [months])
+  const resumo: ResumoDRE = aggOn ? (aggResp ?? RESUMO_VAZIO) : local!
 
-  // month → l1 → l2 → l3 → signed value
-  const vm = useMemo(() => {
-    const r: Record<string, Record<string, Record<string, Record<string, number>>>> = {}
-    for (const row of op) {
-      if (!row.data) continue
-      // Prioriza data_ym do backend (TZ-safe). Fallback: getFullYear/Month
-      // do Date (já criado com parseDataLocal — também TZ-safe).
-      const ym = row.data_ym ?? `${row.data.getFullYear()}-${String(row.data.getMonth() + 1).padStart(2, '0')}`
-      const sign = row.tipo === 'Receita' ? 1 : -1
-      const { l1, l2 } = parseCatHier(row.cat1)
-      const l3 = row.cat1 || l2
-      if (!r[ym])          r[ym]          = {}
-      if (!r[ym][l1])      r[ym][l1]      = {}
-      if (!r[ym][l1][l2])  r[ym][l1][l2]  = {}
-      if (!r[ym][l1][l2][l3]) r[ym][l1][l2][l3] = 0
-      r[ym][l1][l2][l3] += sign * row.valorDRE
-    }
-    return r
-  }, [op])
-
-  const hier = useMemo(() => {
-    const l1m = new Map<string, Map<string, Set<string>>>()
-    for (const row of op) {
-      const { l1, l2 } = parseCatHier(row.cat1)
-      const l3 = row.cat1 || l2
-      if (!l1m.has(l1)) l1m.set(l1, new Map())
-      if (!l1m.get(l1)!.has(l2)) l1m.get(l1)!.set(l2, new Set())
-      l1m.get(l1)!.get(l2)!.add(l3)
-    }
-    return [...l1m.entries()]
-      .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
-      .map(([l1, l2m]) => ({
-        l1,
-        children: [...l2m.entries()]
-          .sort(([a], [b]) => numPrefix(a) - numPrefix(b))
-          .map(([l2, l3s]) => ({
-            l2,
-            children: [...l3s].sort((a, b) => numPrefix(a) - numPrefix(b)),
-          })),
-      }))
-  }, [op])
-
-  // Value getters
-  const getL3 = (col: string, l1: string, l2: string, l3: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + (vm[m]?.[l1]?.[l2]?.[l3] ?? 0), 0)
-    return vm[col]?.[l1]?.[l2]?.[l3] ?? 0
-  }
-
-  const getL2 = (col: string, l1: string, l2: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + getL2(m, l1, l2), 0)
-    return Object.values(vm[col]?.[l1]?.[l2] ?? {}).reduce((s, v) => s + v, 0)
-  }
-
-  const getL1 = (col: string, l1: string): number => {
-    if (col === '__acc__') return months.reduce((s, m) => s + getL1(m, l1), 0)
-    let s = 0
-    for (const l2v of Object.values(vm[col]?.[l1] ?? {}))
-      for (const v of Object.values(l2v)) s += v
-    return s
-  }
-
-  const groupSum = (col: string, maxPfx: number): number =>
-    hier.filter(h => numPrefix(h.l1) <= maxPfx).reduce((s, h) => s + getL1(col, h.l1), 0)
-
-  const makeVals = (fn: (col: string) => number) => cols.map(fn)
+  const { months, hier, subtotais, exec, kpis } = resumo
+  const cols = useMemo(() => [...months, '__acc__'], [months])
+  const recLiqVals = subtotais.recLiq
 
   // Collapse state — set de EXPANDIDOS (vazio = tudo fechado por padrão)
   const [exp1, setExp1] = useState<Set<string>>(new Set())
@@ -334,12 +306,21 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   const [mesSel, setMesSel] = useState<string | undefined>(undefined)
   const [open, setOpen] = useState(false)
 
-  const linhasModal = useMemo(
-    () => linhaSel
-      ? detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
-      : [],
-    [linhaSel, mesSel, data, filters?.regime]
-  )
+  // Proteção de folha no caminho legado, agora como DEFESA EM PROFUNDIDADE.
+  // /api/financeiro já mascara na origem (lib/financeiro-query), então para
+  // quem não tem a permissão `data` chega aqui sem nome nenhum e este passo é
+  // no-op. Fica porque é barato e porque cobre qualquer fonte futura que
+  // esqueça de proteger — mascarar o que já está mascarado não muda nada.
+  const { verFolhaDetalhe } = useAccess()
+
+  const { linhasModal, dadosProtegidos } = useMemo(() => {
+    if (!linhaSel) return { linhasModal: [], dadosProtegidos: false }
+    const brutas = detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
+    // Mascara POR LANÇAMENTO: num subtotal misto, as linhas comuns seguem
+    // completas e só as de folha são protegidas. Quantidade e total intactos.
+    const { rows, dadosProtegidos } = protegerDetalheFolha(brutas, verFolhaDetalhe)
+    return { linhasModal: rows, dadosProtegidos }
+  }, [linhaSel, mesSel, data, filters?.regime, verFolhaDetalhe])
 
   const kindModal = (rowKind: DRERow['kind']): 'n3' | 'agrupador' | 'subtotal' => {
     if (rowKind === 'l3') return 'n3'
@@ -361,152 +342,73 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   }
 
   // ── Build dreRows ──────────────────────────────────────────────────────────
-  const { dreRows, recLiqVals } = useMemo(() => {
-    const recBrutaVals    = makeVals(col => groupSum(col, 1.99))
-    const recLiqVals      = makeVals(col => groupSum(col, 2.99))
-    const lucroBrutoVals  = makeVals(col => groupSum(col, 3.99))
-    const margContribVals = makeVals(col => groupSum(col, 3.99) + getL2(col, '4 — Despesas', '4.1'))
-    const ebitdaVals      = makeVals(col => groupSum(col, 4.99))
-    const ebitVals        = makeVals(col => groupSum(col, 5.99))
-    const ebtVals         = makeVals(col => groupSum(col, 6.99))
-    const lucroLiqVals    = makeVals(col => groupSum(col, 99))
-
-    const dreRows: DRERow[] = []
+  // Monta as linhas visíveis a partir da árvore JÁ VALORIZADA que veio da
+  // agregação, intercalando os subtotais nas transições de grupo. Nenhum
+  // cálculo financeiro acontece aqui: `vals` já vem pronto de aggResumoDRE.
+  //
+  // O estado de colapso mora só aqui, de propósito. O payload traz valor para
+  // todo nó, então abrir e fechar um grupo não refaz requisição nem muda nada
+  // no servidor.
+  const dreRows = useMemo(() => {
+    const rows: DRERow[] = []
 
     for (let i = 0; i < hier.length; i++) {
-      const { l1, children: l2s } = hier[i]
+      const { l1, vals: l1Vals, children: l2s } = hier[i]
       const prefix  = numPrefix(l1)
       const nextPfx = i + 1 < hier.length ? numPrefix(hier[i + 1].l1) : Infinity
 
-      dreRows.push({
-        id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1,
-        vals: makeVals(col => getL1(col, l1)),
-      })
+      rows.push({ id: `l1::${l1}`, kind: 'l1', label: l1, l1Key: l1, vals: l1Vals })
 
       if (exp1.has(l1)) {
-        for (const { l2, children: l3s } of l2s) {
-          dreRows.push({
-            id: `l2::${l2}`, kind: 'l2', label: getL2Label(l2), l1Key: l1, l2Key: l2,
-            vals: makeVals(col => getL2(col, l1, l2)),
-          })
+        for (const { l2, label, vals: l2Vals, children: l3s } of l2s) {
+          rows.push({ id: `l2::${l2}`, kind: 'l2', label, l1Key: l1, l2Key: l2, vals: l2Vals })
           if (exp2.has(l2)) {
-            for (const l3 of l3s) {
-              dreRows.push({
-                id: `l3::${l1}::${l2}::${l3}`, kind: 'l3', label: l3,
-                l1Key: l1, l2Key: l2,
-                vals: makeVals(col => getL3(col, l1, l2, l3)),
+            for (const n3 of l3s) {
+              rows.push({
+                id: `l3::${l1}::${l2}::${n3.l3}`, kind: 'l3', label: n3.l3,
+                l1Key: l1, l2Key: l2, vals: n3.vals,
               })
             }
           }
-          // Margem de Contribuição after 4.1
+          // Margem de Contribuição logo após 4.1
           if (l1 === '4 — Despesas' && l2 === '4.1') {
-            dreRows.push({
+            rows.push({
               id: '__margContrib__', kind: 'subtotal',
               label: '(=) Margem de Contribuição',
-              vals: margContribVals,
+              vals: subtotais.margContrib,
               tip: 'Lucro Bruto + Despesas Comerciais (4.1)\n\nMede quanto sobra para cobrir os custos fixos após pagar os custos operacionais e as despesas variáveis comerciais.\n\nFórmula: Lucro Bruto + Σ 4.1',
             })
           }
         }
       }
 
-      // Subtotals at group transitions
+      // Subtotais nas transições de grupo
       if (prefix <= 2 && nextPfx > 2)
-        dreRows.push({ id: '__recLiq__',   kind: 'subtotal',  label: '(=) Receita Operacional Líquida', vals: recLiqVals,
+        rows.push({ id: '__recLiq__',   kind: 'subtotal',  label: '(=) Receita Operacional Líquida', vals: subtotais.recLiq,
           tip: 'Receita Operacional (grupo 1) + Deduções (grupo 2)\n\nGrupo 2 inclui impostos s/ faturamento (PIS, COFINS, ISS…), tarifas de recebimento (boleto, PIX, cartão) e royalties. Esses valores são negativos, então reduzem a receita bruta.\n\nFórmula: Σ grupos 1 + 2' })
       if (prefix <= 3 && nextPfx > 3)
-        dreRows.push({ id: '__lubruto__',  kind: 'subtotal',  label: '(=) Lucro Bruto - R$',            vals: lucroBrutoVals,
+        rows.push({ id: '__lubruto__',  kind: 'subtotal',  label: '(=) Lucro Bruto - R$',            vals: subtotais.lucroBruto,
           tip: 'Receita Operacional Líquida − Custos Operacionais (grupo 3)\n\nGrupo 3: mão de obra CSP (3.1), ISAAS (3.2) e serviços terceirizados (3.3).\n\nFórmula: Σ grupos 1 + 2 + 3' })
       if (prefix <= 4 && nextPfx > 4)
-        dreRows.push({ id: '__ebitda__',   kind: 'ebitda',    label: '(=) EBITDA',                      vals: ebitdaVals,
+        rows.push({ id: '__ebitda__',   kind: 'ebitda',    label: '(=) EBITDA',                      vals: subtotais.ebitda,
           tip: 'Lucro Bruto − Todas as Despesas (grupos 4.1 + 4.2 + 4.3)\n\n4.1 Comerciais · 4.2 Administrativas · 4.3 Gerais\n\nAntes de depreciação, resultado financeiro e impostos sobre lucro.\n\nFórmula: Σ grupos 1 + 2 + 3 + 4' })
       if (prefix <= 5 && nextPfx > 5)
-        dreRows.push({ id: '__ebit__',     kind: 'subtotal',  label: '(=) Lucro Operacional (EBIT)',     vals: ebitVals,
+        rows.push({ id: '__ebit__',     kind: 'subtotal',  label: '(=) Lucro Operacional (EBIT)',     vals: subtotais.ebit,
           tip: 'EBITDA − Depreciações e Amortizações (grupo 5)\n\n5.1 Depreciação (reformas, equipamentos, mobiliário, imóveis)\n5.2 Amortização (software, carteira de clientes)\n\nFórmula: Σ grupos 1 + 2 + 3 + 4 + 5' })
       if (prefix < 7 && nextPfx >= 7)
-        dreRows.push({ id: '__ebt__',      kind: 'subtotal',  label: '(=) EBT — Lucro Antes do IR e CS', vals: ebtVals,
+        rows.push({ id: '__ebt__',      kind: 'subtotal',  label: '(=) EBT — Lucro Antes do IR e CS', vals: subtotais.ebt,
           tip: 'EBIT + Resultado Financeiro (grupo 6)\n\n6.1 Receitas financeiras (rendimentos, dividendos, câmbio)\n6.2 Despesas financeiras (juros, tarifas bancárias, inadimplência)\n\nFórmula: Σ grupos 1 + 2 + 3 + 4 + 5 + 6' })
       if (i === hier.length - 1)
-        dreRows.push({ id: '__lucroliq__', kind: 'resultado', label: '(=) Lucro Líquido - R$',           vals: lucroLiqVals,
+        rows.push({ id: '__lucroliq__', kind: 'resultado', label: '(=) Lucro Líquido - R$',           vals: subtotais.lucroLiq,
           tip: 'EBT − Impostos sobre o Lucro (grupo 7)\n\n7.1 CSLL · 7.2 IRPJ\n\nResultado final após todos os custos, despesas e impostos.\n\nFórmula: Σ todos os grupos (1 a 7)' })
     }
 
-    return { dreRows, recBrutaVals, recLiqVals }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hier, exp1, exp2, months, vm])
-
-  // ── Executive KPIs (accumulated) ──────────────────────────────────────────
-  const exec = useMemo(() => {
-    const recOp       = groupSum('__acc__', 1.99)
-    const recFin      = getL1('__acc__', '6.1 — Rec. Financeira')
-    const recBruta    = recOp + recFin
-    const recLiq      = groupSum('__acc__', 2.99)
-    const lubruto     = groupSum('__acc__', 3.99)
-    const despCom     = getL2('__acc__', '4 — Despesas', '4.1')
-    const margContrib = lubruto + despCom
-    const ebitda      = groupSum('__acc__', 4.99)
-    const ebit        = groupSum('__acc__', 5.99)
-    const lucroLiq    = groupSum('__acc__', 99)
-
-    // Growth Rate: compare last two visible months
-    let growthRate: number | null = null
-    if (months.length >= 2) {
-      const cur = months[months.length - 1]
-      const prv = months[months.length - 2]
-      const curRL = groupSum(cur, 2.99)
-      const prvRL = groupSum(prv, 2.99)
-      if (prvRL) growthRate = (curRL - prvRL) / Math.abs(prvRL)
-    }
-
-    return { recOp, recFin, recBruta, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, growthRate }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [months, vm, hier])
-
-  // ── KPIs inferiores ────────────────────────────────────────────────────────
-  const kpis = useMemo(() => {
-    // Helper: sum op rows matching any of the given cat1 prefixes
-    const S = (...pfx: string[]) =>
-      op.filter(r => pfx.some(p => (r.cat1 || '').startsWith(p)))
-        .reduce((s, r) => s + (r.tipo === 'Receita' ? 1 : -1) * r.valorDRE, 0)
-
-    const recOp      = groupSum('__acc__', 1.99)
-    const recLiq     = groupSum('__acc__', 2.99)
-    const lubruto    = groupSum('__acc__', 3.99)
-    const despCom    = getL2('__acc__', '4 — Despesas', '4.1')
-    const margContrib = lubruto + despCom
-    const ebitda     = groupSum('__acc__', 4.99)
-    const ebit       = groupSum('__acc__', 5.99)
-    const lucroLiq   = groupSum('__acc__', 99)
-    const deducoes   = groupSum('__acc__', 2.99) - groupSum('__acc__', 1.99)
-    const csp        = getL1('__acc__', '3 — Custos Operac.')
-    const terceiros  = getL2('__acc__', '3 — Custos Operac.', '3.3')
-    const despAdmin  = getL2('__acc__', '4 — Despesas', '4.2')
-    const despGerais = getL2('__acc__', '4 — Despesas', '4.3')
-
-    const maoObraCSP   = getL2('__acc__', '3 — Custos Operac.', '3.1')
-    const isaas        = getL2('__acc__', '3 — Custos Operac.', '3.2')
-    const remuCom      = S('4.1.01','4.1.02','4.1.03','4.1.04','4.1.05','4.1.23')
-    const admPessoas   = S('4.2.01','4.2.02','4.2.03','4.2.04','4.2.05','4.2.06','4.2.07','4.2.08','4.2.09','4.2.25','4.2.26')
-    const gastosPessoas = maoObraCSP + isaas + remuCom + admPessoas
-
-    const despAquisicao = S('4.1.02','4.1.04','4.1.06','4.1.07','4.1.08','4.1.10','4.1.11','4.1.12','4.1.13','4.1.14','4.1.15','4.1.16','4.1.17')
-    const leadBroker    = S('4.1.06')
-    const despExpansao  = S('4.1.18','4.1.19','4.1.20','4.1.21','4.1.22','4.1.23')
-    const proLabore     = S('4.2.25','4.2.26')
-
-    const growthRate = exec.growthRate
-
-    return {
-      recOp, recLiq, lubruto, margContrib, ebitda, ebit, lucroLiq, deducoes,
-      csp, terceiros, despCom, despAdmin, despGerais, gastosPessoas,
-      despAquisicao, leadBroker, despExpansao, proLabore, growthRate,
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [op, months, vm, hier, exec])
+    return rows
+  }, [hier, subtotais, exp1, exp2])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  if (op.length === 0) {
+  if (resumo.totalOperacional === 0) {
     return (
       <div style={{ textAlign: 'center', padding: 48, color: 'var(--ink3)', fontSize: 12 }}>
         Nenhum lançamento quitado no período selecionado.
@@ -864,6 +766,7 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
         onOpenChange={setOpen}
         linhaSel={linhaSel}
         linhas={linhasModal}
+        dadosProtegidos={dadosProtegidos}
         periodo={periodoLabel(mesSel, filters?.dateFrom, filters?.dateTo)}
       />
 
@@ -874,12 +777,14 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
 // ─── Sheet de conferência por linha ──────────────────────────────────────────
 
 function DRESheet({
-  open, onOpenChange, linhaSel, linhas, periodo,
+  open, onOpenChange, linhaSel, linhas, dadosProtegidos, periodo,
 }: {
   open: boolean
   onOpenChange: (b: boolean) => void
   linhaSel: { label: string; matcher: (r: Lancamento) => boolean; kind: 'n3' | 'agrupador' | 'subtotal' } | null
   linhas: ReturnType<typeof detalheDRE>
+  /** Alguma linha teve contraparte/descrição mascaradas por falta de ver_folha_detalhe. */
+  dadosProtegidos: boolean
   periodo: string
 }) {
   const hasReceita = linhas.some(l => l.tipo === 'Receita')
@@ -925,6 +830,12 @@ function DRESheet({
               <> · {catCount} categoria{catCount === 1 ? '' : 's'}</>
             )}
           </div>
+          {dadosProtegidos && (
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
+              Alguns lançamentos estão com contraparte e descrição ocultas.
+              Os valores e o total não foram alterados.
+            </div>
+          )}
           <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
             {isMixed ? (
               <>

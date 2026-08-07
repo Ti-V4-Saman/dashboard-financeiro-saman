@@ -4,6 +4,7 @@ import { jsonFetcher } from '@/lib/fetchJson'
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import type { Lancamento, Filters, Regime, TipoPeriodo, Atalho } from '@/lib/types'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
 import { parseDataLocal } from '@/lib/utils'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -154,7 +155,17 @@ function useDebounce<T>(value: T, delay: number): T {
 
 // ── Main hook ──────────────────────────────────────────────────────────────────
 
-export function useFinanceiro() {
+/**
+ * @param precisaArrayBruto  Com AGG_BACKEND ON, só a aba Qualidade consome o
+ *   array cru — as demais telas já têm endpoint agregado próprio. Quando este
+ *   parâmetro é `false` no modo agregado, a CHAVE do SWR vira `null` e a
+ *   requisição a /api/financeiro deixa de existir. Não é esconder o custo com
+ *   CSS: o request não é feito.
+ *
+ *   Com a flag OFF o parâmetro é ignorado e o hook carrega sempre, exatamente
+ *   como antes.
+ */
+export function useFinanceiro(precisaArrayBruto = true) {
   const searchParams = useSearchParams()
   const router       = useRouter()
 
@@ -174,10 +185,15 @@ export function useFinanceiro() {
   const rawApiKey    = buildApiUrl(filters.dateFrom, filters.dateTo, filters.regime)
   const debouncedKey = useDebounce(rawApiKey, 300)
 
+  // No modo agregado, sem consumidor do array a chave é `null` e o SWR não
+  // dispara nada. O cache por chave continua valendo: reabrir Qualidade com os
+  // mesmos filtros reaproveita a resposta anterior em vez de refazer o request.
+  const chave = (!isAggClientEnabled() || precisaArrayBruto) ? debouncedKey : null
+
   const { data: raw, isLoading, isValidating, mutate } = useSWR<{
     lancamentos: Lancamento[]
     contas: string[]
-  }>(debouncedKey, fetcher, {
+  }>(chave, fetcher, {
     refreshInterval: 15 * 60 * 1000,
     keepPreviousData: true,   // show old data while fetching new — enables subtle loading
   })

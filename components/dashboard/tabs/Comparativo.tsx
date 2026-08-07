@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import useSWR from 'swr'
 import {
   LineChart,
   Line,
@@ -12,8 +13,13 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { Lancamento, Filters } from '@/lib/types'
-import { filtraOperacional } from '@/lib/financeiro/regime'
-import { fR, getMonths, mLbl, parseCatHier, getL2Label } from '@/lib/utils'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery, isForbidden } from '@/lib/agg-client'
+import {
+  aggComparativo, comparaMeses,
+  type ComparativoAgg,
+} from '@/lib/aggregations/comparativo'
+import { fR, mLbl, getL2Label } from '@/lib/utils'
 
 // ─── Visual config (mirrors DRE) ─────────────────────────────────────────────
 
@@ -27,10 +33,6 @@ const ROW_STYLE: Record<RowKind, { bg: string; fg: string; fw: number; fs: numbe
 
 const INDENT: Record<RowKind, number> = { l1: 12, l2: 28, l3: 44 }
 
-function numPrefix(s: string): number {
-  const m = s.match(/^([\d.]+)/)
-  return m ? parseFloat(m[1]) : 999
-}
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Select,
@@ -46,16 +48,69 @@ interface Props {
   filters?: Filters
 }
 
-export function Comparativo({ data, allData, filters }: Props) {
-  const regime = filters?.regime ?? 'competencia'
-  const op    = useMemo(() => filtraOperacional(data,    regime), [data,    regime])
-  const allOp = useMemo(() => filtraOperacional(allData, regime), [allData, regime])
+/**
+ * Placeholder enquanto a resposta agregada não chegou. `months` vazio faz a
+ * tela renderizar sem linhas — transitório, e o `keepPreviousData` do SWR evita
+ * que reapareça a cada troca de filtro.
+ */
+const VAZIO: ComparativoAgg = {
+  months: [], monthly: [], mmTable: [],
+  ytd: { rec: 0, desp: 0, res: 0, margem: null },
+  hierPorMes: {},
+}
 
-  // months derived from filtered data → chart and tables respect the selected period
-  const months = useMemo(() => getMonths(op), [op])
+export function Comparativo({ data, allData, filters }: Props) {
+  const aggOn = isAggClientEnabled()
+  const regime = filters?.regime ?? 'competencia'
+
+  const filtros = useMemo(() => ({
+    categoria: filters?.categoria ?? [],
+    cc:        filters?.cc ?? [],
+    tipo:      filters?.tipo ?? '',
+    situacao:  filters?.situacao ?? [],
+    conta:     filters?.conta ?? [],
+  }), [filters?.categoria, filters?.cc, filters?.tipo, filters?.situacao, filters?.conta])
+
+  // ── Os dois caminhos da flag chamam a MESMA função ───────────────────────
+  // `allData` é o período SEM os 5 filtros; `data` é ele com os filtros. Como
+  // os dois saem da mesma requisição, o caminho legado passa só `allData` e a
+  // função deriva o filtrado internamente — a mesma coisa que o servidor faz.
+  const url = useMemo(
+    () => (aggOn && filters ? `/api/agg/comparativo?${buildAggQuery(filters)}` : null),
+    [aggOn, filters],
+  )
+  const { data: aggResp, error: erroAgg } =
+    useSWR<ComparativoAgg>(url, aggFetcher, { keepPreviousData: true })
+
+  const local = useMemo(
+    () => (aggOn ? null : aggComparativo(allData, filtros, regime)),
+    [aggOn, allData, filtros, regime],
+  )
+  const agg: ComparativoAgg = aggOn ? (aggResp ?? VAZIO) : local!
+
+  const months      = agg.months
+  const monthlyData = agg.monthly
+  const mmTable     = agg.mmTable
+  const ytd         = agg.ytd
+
+  // `data` continua na assinatura porque o DashboardLayout a passa e o Bloco H
+  // ainda não fechou essas props. A agregação a deriva de `allData`.
+  void data
 
   const [mes1, setMes1] = useState(months[months.length - 2] || months[0] || '')
   const [mes2, setMes2] = useState(months[months.length - 1] || months[0] || '')
+
+  // Com a flag ON, `months` chega vazio no primeiro render e só aparece quando
+  // a resposta volta — os dois seletores nasceriam em '' e ficariam assim para
+  // sempre, deixando o comparador mudo. O efeito preenche o default UMA vez,
+  // quando ainda não há escolha. Guardado em `!mes1`/`!mes2` de propósito: uma
+  // escolha do usuário nunca é sobrescrita, e no caminho legado ele não dispara
+  // porque lá o valor inicial já é válido.
+  useEffect(() => {
+    if (months.length === 0) return
+    if (!mes1) setMes1(months[months.length - 2] || months[0])
+    if (!mes2) setMes2(months[months.length - 1] || months[0])
+  }, [months, mes1, mes2])
 
   // Collapse state — set de EXPANDIDOS (vazio = tudo fechado por padrão)
   const [exp1, setExp1] = useState<Set<string>>(new Set())
@@ -65,120 +120,12 @@ export function Comparativo({ data, allData, filters }: Props) {
   const toggleC2 = (l2: string) =>
     setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
-  // Monthly line chart data
-  const monthlyData = useMemo(() => {
-    return months.map(ym => {
-      const rows = op.filter(r => {
-        if (!r.data) return false
-        const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-        return m === ym
-      })
-      const rec = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-      return {
-        mes: mLbl(ym),
-        receita: rec,
-        despesa: desp,
-        resultado: rec - desp,
-      }
-    })
-  }, [op, months])
-
-  // Comparison table by month (M/M + YoY + YTD)
-  const mmTable = useMemo(() => {
-    const rowsForYm = (dataset: typeof op, ym: string) =>
-      dataset.filter(r => {
-        if (!r.data) return false
-        return `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}` === ym
-      })
-    return months.map((ym, i) => {
-      const rows = rowsForYm(op, ym)
-      const rec  = rows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-      const desp = rows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-      const res  = rec - desp
-
-      // M/M — previous month
-      let prevRec = 0, prevDesp = 0
-      if (i > 0) {
-        const pr = rowsForYm(op, months[i - 1])
-        prevRec  = pr.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-        prevDesp = pr.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-      }
-      const prevRes  = prevRec - prevDesp
-      const varRec   = prevRec  > 0    ? ((rec  - prevRec)  / prevRec)           * 100 : null
-      const varDesp  = prevDesp > 0    ? ((desp - prevDesp) / prevDesp)          * 100 : null
-      const varRes   = prevRes  !== 0  ? ((res  - prevRes)  / Math.abs(prevRes)) * 100 : null
-
-      // YoY — same month, previous year
-      const [yr, mo] = ym.split('-').map(Number)
-      const prevYearYm = `${yr - 1}-${String(mo).padStart(2, '0')}`
-      const pyRows = rowsForYm(allOp, prevYearYm)
-      const yoyRec  = pyRows.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-      const yoyDesp = pyRows.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-      const yoyRes  = yoyRec - yoyDesp
-      const varYoYRec  = yoyRec  > 0   ? ((rec  - yoyRec)  / yoyRec)            * 100 : null
-      const varYoYDesp = yoyDesp > 0   ? ((desp - yoyDesp) / yoyDesp)           * 100 : null
-      const varYoYRes  = yoyRes  !== 0 ? ((res  - yoyRes)  / Math.abs(yoyRes))  * 100 : null
-
-      return { ym, mes: mLbl(ym), rec, desp, res, varRec, varDesp, varRes, varYoYRec, varYoYDesp, varYoYRes, hasYoY: yoyRec > 0 || yoyDesp > 0 }
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [op, allOp, months])
-
-  // YTD totals (all months in the table)
-  const ytd = useMemo(() => {
-    const rec  = mmTable.reduce((s, r) => s + r.rec,  0)
-    const desp = mmTable.reduce((s, r) => s + r.desp, 0)
-    const res  = rec - desp
-    return { rec, desp, res, margem: rec > 0 ? (res / rec) * 100 : null }
-  }, [mmTable])
-
-  // Mes1 vs Mes2 — 3-level hierarchy (mirrors DRE)
-  const hierComparison = useMemo(() => {
-    const rowsForMonth = (ym: string) =>
-      op.filter(r => {
-        if (!r.data) return false
-        const m = `${r.data.getFullYear()}-${String(r.data.getMonth() + 1).padStart(2, '0')}`
-        return m === ym
-      })
-
-    const buildMap = (rows: Lancamento[]) => {
-      const m = new Map<string, Map<string, Map<string, number>>>()
-      for (const r of rows) {
-        const { l1, l2 } = parseCatHier(r.cat1)
-        const l3   = r.cat1    || l2
-        const sign = r.tipo === 'Receita' ? 1 : -1
-        if (!m.has(l1)) m.set(l1, new Map())
-        if (!m.get(l1)!.has(l2)) m.get(l1)!.set(l2, new Map())
-        m.get(l1)!.get(l2)!.set(l3, (m.get(l1)!.get(l2)!.get(l3) || 0) + sign * r.valor)
-      }
-      return m
-    }
-
-    const map1 = buildMap(rowsForMonth(mes1))
-    const map2 = buildMap(rowsForMonth(mes2))
-    const allL1 = new Set([...map1.keys(), ...map2.keys()])
-
-    return [...allL1].sort((a, b) => numPrefix(a) - numPrefix(b)).map(l1 => {
-      const m1l2 = map1.get(l1) || new Map<string, Map<string, number>>()
-      const m2l2 = map2.get(l1) || new Map<string, Map<string, number>>()
-      const allL2 = new Set([...m1l2.keys(), ...m2l2.keys()])
-
-      const l2list = [...allL2].sort((a, b) => numPrefix(a) - numPrefix(b)).map(l2 => {
-        const m1l3 = m1l2.get(l2) || new Map<string, number>()
-        const m2l3 = m2l2.get(l2) || new Map<string, number>()
-        const allL3 = new Set([...m1l3.keys(), ...m2l3.keys()])
-
-        const l3list = [...allL3].sort((a, b) => numPrefix(a) - numPrefix(b)).map(l3 => ({
-          l3,
-          v1: m1l3.get(l3) || 0,
-          v2: m2l3.get(l3) || 0,
-        }))
-        return { l2, v1: l3list.reduce((s, x) => s + x.v1, 0), v2: l3list.reduce((s, x) => s + x.v2, 0), children: l3list }
-      })
-      return { l1, v1: l2list.reduce((s, x) => s + x.v1, 0), v2: l2list.reduce((s, x) => s + x.v2, 0), children: l2list }
-    })
-  }, [op, mes1, mes2])
+  // mes1/mes2 são estado de UI: a árvore de TODOS os meses já veio, então
+  // trocar o seletor é um recálculo local, sem requisição.
+  const hierComparison = useMemo(
+    () => comparaMeses(agg.hierPorMes, mes1, mes2),
+    [agg.hierPorMes, mes1, mes2],
+  )
 
   // Flat rows for rendering (respects collapse state)
   type CompRow = { id: string; kind: RowKind; label: string; l1Key?: string; l2Key?: string; v1: number; v2: number }
@@ -200,6 +147,25 @@ export function Comparativo({ data, allData, filters }: Props) {
     return rows
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hierComparison, exp1, exp2])
+
+  // ── Erro do caminho agregado ─────────────────────────────────────────────
+  // Só existe com a flag ON. `jsonFetcher` lança em !ok, então cair no VAZIO
+  // seria mostrar uma tela sem meses como se o período não tivesse dado — o
+  // oposto do que o usuário precisa saber. Mesmo tratamento das outras telas.
+  if (aggOn && erroAgg) {
+    if (isForbidden(erroAgg)) {
+      return (
+        <div className="text-[12px]" style={{ color: 'var(--ink3)', padding: '32px 0', textAlign: 'center' }}>
+          Você não tem permissão para visualizar o Comparativo.
+        </div>
+      )
+    }
+    return (
+      <div className="text-[12px]" style={{ color: 'var(--red)' }}>
+        Erro ao carregar o Comparativo: {String(erroAgg)}
+      </div>
+    )
+  }
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`

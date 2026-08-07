@@ -17,8 +17,19 @@ import { BUs } from './tabs/BUs'
 import { UsuariosTab } from './tabs/Usuarios'
 import { BlockScreen } from './BlockScreen'
 import { ScreenErrorBoundary } from './ScreenErrorBoundary'
-import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN } from '@/lib/screens'
+import { ALL_SCREENS, sanitizeScreens, TAB_TO_SCREEN, type Screen } from '@/lib/screens'
 import type { Lancamento, Filters } from '@/lib/types'
+import useSWR from 'swr'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import type { FacetsAgg } from '@/lib/aggregations/facets'
+
+/**
+ * Telas que compartilham a FilterBar — espelha COUPLED em /api/agg/facets e
+ * SCREENS_QUE_USAM em /api/financeiro. Serve só para não pedir facetas a quem
+ * receberia 403.
+ */
+const COUPLED_FILTERBAR: Screen[] = ['visao_geral', 'dre', 'centros_custo', 'comparativo', 'lancamentos']
 
 interface DashboardLayoutProps {
   allData: Lancamento[]
@@ -30,6 +41,9 @@ interface DashboardLayoutProps {
   isRefetching: boolean
   refresh: () => void
   listaContas: string[]
+  /** Elevado ao DashboardRoot para o useFinanceiro decidir se busca o array. */
+  activeTab: Tab
+  setActiveTab: (t: Tab) => void
 }
 
 export function DashboardLayout({
@@ -42,8 +56,9 @@ export function DashboardLayout({
   isRefetching,
   refresh,
   listaContas,
+  activeTab,
+  setActiveTab,
 }: DashboardLayoutProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('visao')
   const { data: session, status } = useSession()
   const isAdmin =
     process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === 'true' ||
@@ -59,6 +74,28 @@ export function DashboardLayout({
         : sanitizeScreens((session?.user as { telasPermitidas?: string[] })?.telasPermitidas),
     [isAdmin, session],
   )
+
+  const aggOn = isAggClientEnabled()
+
+  /**
+   * Facetas da FilterBar no modo agregado. Só o período e o regime importam —
+   * as listas derivam do conjunto SEM os 5 filtros, então mudar um filtro não
+   * refaz esta chamada.
+   *
+   * Guardada por `podeVerFinanceiro`: a rota é COUPLED (qualquer uma das cinco
+   * telas do FilterBar), e quem não tem nenhuma delas receberia 403 — melhor
+   * não pedir. Sem facetas, a FilterBar cai no caminho legado, que com o array
+   * vazio simplesmente não oferece opção nenhuma. É o mesmo que ela já faz hoje
+   * para esse perfil.
+   */
+  const podeVerFinanceiro = isAdmin || COUPLED_FILTERBAR.some(slug => allowedScreens.includes(slug))
+  const facetsUrl = aggOn && podeVerFinanceiro
+    ? `/api/agg/facets?${buildAggQuery({ ...filters, categoria: [], cc: [], tipo: '', situacao: [], conta: [] })}`
+    : null
+  const { data: facets } = useSWR<FacetsAgg>(facetsUrl, aggFetcher, { keepPreviousData: true })
+
+  // Contador da TopBar: no modo agregado vem das facetas; no legado, do array.
+  const totalLancamentos = aggOn ? (facets?.total ?? 0) : allData.length
 
   const activeSlug = TAB_TO_SCREEN[activeTab]
   const canSeeActive = isAdmin || allowedScreens.includes(activeSlug)
@@ -93,12 +130,13 @@ export function DashboardLayout({
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--page)' }}>
-      <TopBar isLoading={isLoading} refresh={refresh} total={allData.length} />
+      <TopBar isLoading={isLoading} refresh={refresh} total={totalLancamentos} />
       <FilterBar
         filters={filters}
         setFilters={setFilters}
         clearAll={clearAll}
         allData={allData}
+        facets={aggOn ? (facets ?? null) : null}
         listaContas={listaContas}
         activeTab={activeTab}
       />
@@ -150,16 +188,18 @@ export function DashboardLayout({
             }}
           >
             {/* TODO Fase 2: telas ACOPLADAS (visao/dre/cc/comparativo/lancamentos)
-                ainda recebem o array BRUTO via /api/financeiro (prop filteredData/
-                allData). Esconder-aba + bloqueio aqui é só UI — o dado bruto ainda
-                desce. A proteção server-side real (agregação por permissão) é Fase 2. */}
+                ainda recebem o array via /api/financeiro (prop filteredData/allData),
+                e esconder-aba + bloqueio aqui continua sendo só UI. O que MUDOU: o
+                dado nominal de folha não desce mais para quem não tem
+                ver_folha_detalhe — /api/financeiro mascara na origem. Falta a
+                agregação por permissão, que reduz o resto do array. */}
             {activeTab === 'visao'       && <VisaoGeral data={filteredData} filters={filters} />}
             {activeTab === 'dre'         && <DRE data={filteredData} filters={filters} />}
             {activeTab === 'bus'         && <BUs filters={filters} />}
             {activeTab === 'cc'          && <CentrosCusto data={filteredData} filters={filters} />}
             {activeTab === 'comparativo' && <Comparativo data={filteredData} allData={allData} filters={filters} />}
             {activeTab === 'qualidade'   && <Qualidade data={filteredData} />}
-            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} />}
+            {activeTab === 'lancamentos' && <Lancamentos data={filteredData} filters={filters} />}
             {activeTab === 'metas'       && <MetasTab allData={allData} filters={filters} isAdmin={isAdmin} />}
             {activeTab === 'notas'       && <NotasFiscais filters={filters} />}
             {activeTab === 'acesso'      && isAdmin && <UsuariosTab />}

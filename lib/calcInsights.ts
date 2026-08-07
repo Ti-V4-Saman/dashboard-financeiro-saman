@@ -20,7 +20,12 @@ export function calcDiaDePico(
   const map = new Map<string, number>()
   for (const r of data) {
     if (r.tipo !== 'Receita' || r.isTransfer || !r.data) continue
-    const key = fDt(r.data) // dd/mm/yyyy
+    // Aceita Date (client) e 'YYYY-MM-DD' (servidor, via financeiro-query).
+    // Sem isto haveria DUAS implementações de "dia de pico" divergindo.
+    const d = r.data as unknown
+    const key = typeof d === 'string'
+      ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
+      : fDt(r.data) // dd/mm/yyyy
     map.set(key, (map.get(key) || 0) + r.valor)
   }
   if (map.size === 0) return null

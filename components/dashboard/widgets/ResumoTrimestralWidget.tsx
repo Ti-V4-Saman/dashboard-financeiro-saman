@@ -40,6 +40,12 @@ import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { safeFetcher, asArray } from '@/lib/fetchJson'
 import { useAccess } from '@/lib/useAccess'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
+import {
+  aggResumoTrimestral, prepararDados,
+  type LinhaCalc, type MesCalc, type LinhaKind, type ResumoTrimestralAgg,
+} from '@/lib/aggregations/resumoTrimestral'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
 import { parseCatHier } from '@/lib/utils'
 
@@ -105,118 +111,6 @@ function fRdre(v: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   })
-}
-
-// ── Linha config ─────────────────────────────────────────────────────────────
-
-type LinhaKind = 'receita' | 'despesa' | 'subtotal' | 'resultado'
-
-interface LinhaCalc {
-  id: string
-  label: string
-  total: number
-  meta: number               // sempre signed (negativo para despesas)
-  kind: LinhaKind
-  delta: boolean             // mostra Δ vs mês anterior?
-}
-
-interface MesCalc {
-  ym: string
-  hasData: boolean
-  linhas: LinhaCalc[]
-}
-
-// L1 labels conforme gM() em lib/utils.ts
-const L1_REC_OP   = '1 — Rec. Operacionais'
-const L1_DED      = '2 — Deduções'
-const L1_CUSTOS   = '3 — Custos Operac.'
-const L1_DESP     = '4 — Despesas'
-const L1_REC_FIN  = '6.1 — Rec. Financeira'
-const L1_DESP_FIN = '6.2 — Desp. Financeira'
-const L1_DEPREC   = '5 — Depreciações'
-const L1_IMP_LUC  = '7 — Impostos s/ Lucro'
-
-/** Calcula linhas da DRE para um mês específico.
- *
- *  `excludeBaixados=true` filtra lançamentos com situacao === 'Quitado'.
- *  Usado para meses FUTUROS (M+1, M+2): em projeção, lançamentos já baixados
- *  pertencem ao mês em que foram pagos (caixa), não ao mês de competência
- *  futuro — evita double-counting com a visão de caixa realizado.
- *  Mês de referência (M) mantém competência completa (inclui Quitado).
- */
-function calcMes(
-  ym: string,
-  data: Lancamento[],
-  metas: Meta[],
-  excludeBaixados: boolean = false,
-): MesCalc {
-  if (!ym) return { ym: '', hasData: false, linhas: [] }
-  // asArray: rede final. Se algum dia uma resposta inesperada escapar do
-  // fetcher, o widget renderiza vazio em vez de estourar .filter().
-  const rows = asArray<Lancamento>(data).filter(r => {
-    if (r.data_ym !== ym) return false
-    if (excludeBaixados && r.situacao === 'Quitado') return false
-    return true
-  })
-  const metasMes = asArray<Meta>(metas).filter(m => m.mes_referencia === ym)
-
-  /** Soma assinada (receita + / despesa −) das categorias do(s) L1. */
-  const calcTotal = (l1: string | string[]): number => {
-    const labels = Array.isArray(l1) ? l1 : [l1]
-    return rows
-      .filter(r => labels.includes(parseCatHier(r.cat1).l1))
-      .reduce((s, r) => s + (r.tipo === 'Receita' ? r.valor : -r.valor), 0)
-  }
-
-  /** Soma absoluta (positiva) das metas do(s) L1. */
-  const calcMetaAbs = (l1: string | string[]): number => {
-    const labels = Array.isArray(l1) ? l1 : [l1]
-    return metasMes
-      .filter(m => labels.includes(parseCatHier(m.categoria_nivel_3 || m.categoria || '').l1))
-      .reduce((s, m) => s + (m.valor_planejado || 0), 0)
-  }
-
-  const totalRecOp   = calcTotal(L1_REC_OP)
-  const totalDed     = calcTotal(L1_DED)
-  const totalROL     = totalRecOp + totalDed                  // dedução já é negativa
-  const totalCusto   = calcTotal(L1_CUSTOS)
-  const totalLB      = totalROL + totalCusto
-  const totalDesp    = calcTotal(L1_DESP)
-  const totalEBITDA  = totalLB + totalDesp
-  const totalRecFin  = calcTotal(L1_REC_FIN)
-  const totalDespFin = calcTotal(L1_DESP_FIN)
-  const totalOutros  = calcTotal([L1_DEPREC, L1_IMP_LUC])     // depreciação + imp. sobre lucro
-  const totalLL      = totalEBITDA + totalRecFin + totalDespFin + totalOutros
-
-  // Meta SIGNED: receita = +abs, despesa = −abs
-  const metaRecOp    = calcMetaAbs(L1_REC_OP)
-  const metaDed      = -calcMetaAbs(L1_DED)
-  const metaROL      = metaRecOp + metaDed
-  const metaCusto    = -calcMetaAbs(L1_CUSTOS)
-  const metaLB       = metaROL + metaCusto
-  const metaDesp     = -calcMetaAbs(L1_DESP)
-  const metaEBITDA   = metaLB + metaDesp
-  const metaRecFin   = calcMetaAbs(L1_REC_FIN)
-  const metaDespFin  = -calcMetaAbs(L1_DESP_FIN)
-  const metaOutros   = -calcMetaAbs([L1_DEPREC, L1_IMP_LUC])
-  const metaLL       = metaEBITDA + metaRecFin + metaDespFin + metaOutros
-
-  const linhas: LinhaCalc[] = [
-    { id: 'rec_op',  label: '1 — Rec. Operacionais', total: totalRecOp,   meta: metaRecOp,   kind: 'receita',   delta: true  },
-    { id: 'ded',     label: '2 — Deduções',          total: totalDed,     meta: metaDed,     kind: 'despesa',   delta: false },
-    { id: 'rol',     label: '(=) Rec. Op. Líquida',  total: totalROL,     meta: metaROL,     kind: 'subtotal',  delta: false },
-    { id: 'cu',      label: '3 — Custos Operac.',    total: totalCusto,   meta: metaCusto,   kind: 'despesa',   delta: false },
-    { id: 'lb',      label: '(=) Lucro Bruto',       total: totalLB,      meta: metaLB,      kind: 'subtotal',  delta: true  },
-    { id: 'desp',    label: '4 — Despesas',          total: totalDesp,    meta: metaDesp,    kind: 'despesa',   delta: false },
-    { id: 'ebitda',  label: '(=) EBITDA',            total: totalEBITDA,  meta: metaEBITDA,  kind: 'subtotal',  delta: true  },
-    { id: 'recf',    label: '6.1 — Rec. Financeira', total: totalRecFin,  meta: metaRecFin,  kind: 'receita',   delta: false },
-    { id: 'despf',   label: '6.2 — Desp. Financeira',total: totalDespFin, meta: metaDespFin, kind: 'despesa',   delta: false },
-    { id: 'outros',  label: 'Outros',                total: totalOutros,  meta: metaOutros,  kind: 'despesa',   delta: false },
-    { id: 'll',      label: '(=) Lucro Líquido',     total: totalLL,      meta: metaLL,      kind: 'resultado', delta: true  },
-  ]
-
-  const hasData = linhas.some(l => l.total !== 0 || l.meta !== 0)
-  return { ym, hasData, linhas }
 }
 
 // ── Cor do badge de % meta (regra invertida por tipo) ────────────────────────
@@ -316,8 +210,8 @@ function LinhaRow({ linha, anterior }: { linha: LinhaCalc; anterior?: LinhaCalc 
     /* subtotal/resultado */    (linha.total >= 0 ? 'var(--green)' : 'var(--red)')
 
   // Ratio para badge de % meta
-  const hasMeta = Math.abs(linha.meta) > 0.01
-  const ratio   = hasMeta ? Math.abs(linha.total) / Math.abs(linha.meta) : 0
+  const hasMeta = linha.meta !== null && Math.abs(linha.meta) > 0.01
+  const ratio   = hasMeta ? Math.abs(linha.total) / Math.abs(linha.meta as number) : 0
   const pctNum  = hasMeta ? Math.round(ratio * 100) : null
   const badge   = hasMeta ? pctBadgeStyle(ratio, linha.kind) : null
 
@@ -351,7 +245,7 @@ function LinhaRow({ linha, anterior }: { linha: LinhaCalc; anterior?: LinhaCalc 
 
       {/* Meta */}
       <div style={{ ...NUM_CELL, color: hasMeta ? 'var(--ink3)' : 'var(--ink4, #9ca3af)', fontWeight: 400 }}>
-        {hasMeta ? fRdre(linha.meta) : '—'}
+        {hasMeta ? fRdre(linha.meta as number) : '—'}
       </div>
 
       {/* % meta — badge colorido */}
@@ -579,6 +473,8 @@ function CardSkeleton() {
 
 // ── Componente principal ─────────────────────────────────────────────────────
 
+const VAZIO: MesCalc = { ym: '', hasData: false, linhas: [] }
+
 export default function ResumoTrimestralWidget({ filters }: Props) {
   // Este widget vive na Visão Geral, mas cruza dados da tela 'metas'. Quem não
   // tem essa tela não deve nem disparar a chamada: key null faz o SWR pular o
@@ -586,9 +482,13 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   // de a permissão do client divergir da do servidor.
   const { can } = useAccess()
   const podeVerMetas = can('metas')
+  const aggOn = isAggClientEnabled()
 
+  // Caminho LEGADO (flag OFF) — /api/metas só quando há permissão. Com a flag
+  // ON as metas vêm dentro do payload agregado, então esta chamada não existe.
+  // As duas condições são combinadas, não alternativas.
   const { data: metas = [], isLoading: metasLoading } = useSWR<Meta[]>(
-    podeVerMetas ? '/api/metas' : null,
+    !aggOn && podeVerMetas ? '/api/metas' : null,
     fetcherMetas,
     { refreshInterval: 5 * 60 * 1000 },
   )
@@ -618,8 +518,25 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
   )
 
   const { data: apiResp, isLoading: dataLoading } = useSWR<{ lancamentos: Lancamento[] }>(
-    apiUrl,
+    aggOn ? null : apiUrl,
     fetcherLancamentos,
+    { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
+  )
+
+  // Caminho AGREGADO (flag ON) — uma única chamada. `incluirMetas` é só a
+  // INTENÇÃO do client; quem decide é o servidor, que recalcula a permissão.
+  const aggUrl = useMemo(() => {
+    if (!aggOn) return null
+    const q = buildAggQuery(
+      { ...filters, dateFrom: rangeDe, dateTo: rangeAte, regime: 'competencia' },
+      { mesAnt, mesRef, mesM1, mesM2, incluirMetas: String(podeVerMetas) },
+    )
+    return `/api/agg/resumo-trimestral?${q}`
+  }, [aggOn, filters, rangeDe, rangeAte, mesAnt, mesRef, mesM1, mesM2, podeVerMetas])
+
+  const { data: aggResp, isLoading: aggLoading } = useSWR<ResumoTrimestralAgg>(
+    aggUrl,
+    aggFetcher,
     { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
   )
 
@@ -628,40 +545,49 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
     [apiResp],
   )
 
-  // Aplica filtros NÃO-temporais (mantém o card alinhado com filtros do dash
-  // exceto data). Filtros: categoria, cc, tipo, situacao, conta + regras de
-  // ouro: !isTransfer, !Cancelado, !Renegociado.
-  const dataFiltradaNaoTemporal = useMemo(() => {
-    return apiData.filter(r => {
-      if (r.isTransfer) return false
-      if (r.situacao === 'Cancelado' || r.situacao === 'Renegociado') return false
-
-      if (filters.categoria.length > 0) {
-        const cats = r.categorias.map(c => c.nome)
-        if (!filters.categoria.some(c => cats.includes(c))) return false
-      }
-      if (filters.cc.length > 0) {
-        const ccs = r._ccList.map(c => c.nome)
-        if (!filters.cc.some(c => ccs.includes(c))) return false
-      }
-      if (filters.tipo            && r.tipo     !== filters.tipo)     return false
-      if (filters.situacao.length > 0 && !filters.situacao.includes(r.situacao)) return false
-      if (filters.conta.length    > 0 && !filters.conta.includes(r.conta))       return false
-      return true
-    })
-  }, [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta])
+  // Regras de ouro + os 5 filtros do dash. Agora vem de `prepararDados`, a
+  // mesma função que a rota agregada usa — antes isto era inline aqui e
+  // duplicava filtraOperacional.
+  const dataFiltradaNaoTemporal = useMemo(
+    () => prepararDados(apiData, {
+      categoria: filters.categoria, cc: filters.cc, tipo: filters.tipo,
+      situacao: filters.situacao, conta: filters.conta,
+    }),
+    [apiData, filters.categoria, filters.cc, filters.tipo, filters.situacao, filters.conta],
+  )
 
   // Mês de referência: competência completa (inclui Quitado).
   // Próximos meses (M+1, M+2): competência menos baixados — quitados já
   // pertencem ao mês do pagamento (caixa), não ao mês de competência futuro.
   // Mês anterior (para Δ): competência completa, para comparação consistente
   // com o mês de referência.
-  const calcRef  = useMemo(() => calcMes(mesRef,  dataFiltradaNaoTemporal, metas, false), [mesRef,  dataFiltradaNaoTemporal, metas])
-  const calcM1   = useMemo(() => calcMes(mesM1,   dataFiltradaNaoTemporal, metas, true),  [mesM1,   dataFiltradaNaoTemporal, metas])
-  const calcM2   = useMemo(() => calcMes(mesM2,   dataFiltradaNaoTemporal, metas, true),  [mesM2,   dataFiltradaNaoTemporal, metas])
-  const calcAnt  = useMemo(() => calcMes(mesAnt,  dataFiltradaNaoTemporal, metas, false), [mesAnt,  dataFiltradaNaoTemporal, metas])
+  // Legado: a MESMA função pura da rota agregada, rodando no browser.
+  // `metas: null` quando o usuário não tem a tela — produz meta null, não zero.
+  const local = useMemo(
+    () => aggResumoTrimestral(
+      dataFiltradaNaoTemporal,
+      podeVerMetas ? metas : null,
+      { ant: mesAnt, ref: mesRef, m1: mesM1, m2: mesM2 },
+    ),
+    [dataFiltradaNaoTemporal, metas, podeVerMetas, mesAnt, mesRef, mesM1, mesM2],
+  )
 
-  const loading = (metasLoading && metas.length === 0) || (dataLoading && !apiResp)
+  const resumo: ResumoTrimestralAgg = aggOn
+    ? (aggResp ?? { meses: { ant: VAZIO, ref: VAZIO, m1: VAZIO, m2: VAZIO }, metasDisponiveis: false })
+    : local
+
+  const calcRef = resumo.meses.ref
+  const calcM1  = resumo.meses.m1
+  const calcM2  = resumo.meses.m2
+  const calcAnt = resumo.meses.ant
+
+  // metasDisponiveis: no agregado vem do servidor (autorização efetiva);
+  // no legado, da permissão do client.
+  const metasDisponiveis = aggOn ? resumo.metasDisponiveis : podeVerMetas
+
+  const loading = aggOn
+    ? (aggLoading && !aggResp)
+    : ((metasLoading && metas.length === 0) || (dataLoading && !apiResp))
 
   return (
     <section>
@@ -683,9 +609,9 @@ export default function ResumoTrimestralWidget({ filters }: Props) {
           margin: '2px 0 0',
         }}>
           Mês de referência (filtro do dash) + 2 meses seguintes
-          {podeVerMetas
+          {metasDisponiveis
             ? ' · meta cruzada via módulo Metas'
-            : ' · colunas de meta indisponíveis (sem acesso ao módulo Metas)'}
+            : ' · Metas indisponíveis para este perfil.'}
         </p>
       </div>
 
