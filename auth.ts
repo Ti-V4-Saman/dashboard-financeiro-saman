@@ -63,6 +63,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const access = await getUserAccessByEmail(session.user.email)
         session.user.isAdmin = access.isAdmin
         session.user.telasPermitidas = access.telasPermitidas
+        session.user.verFolhaDetalhe = access.verFolhaDetalhe
       }
       return session
     },

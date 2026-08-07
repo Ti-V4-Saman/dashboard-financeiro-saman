@@ -39,13 +39,13 @@ export function UsuariosTab() {
 
   // Editor de permissões por usuário (linha expansível)
   const [permsFor, setPermsFor] = useState<number | null>(null)
-  const [draft, setDraft] = useState<{ is_admin: boolean; telas: string[] }>({ is_admin: false, telas: [] })
+  const [draft, setDraft] = useState<{ is_admin: boolean; telas: string[]; verFolha: boolean }>({ is_admin: false, telas: [], verFolha: false })
   const [savingPerms, setSavingPerms] = useState(false)
 
   const openPerms = (u: Usuario) => {
     if (permsFor === u.id) { setPermsFor(null); return }
     setPermsFor(u.id)
-    setDraft({ is_admin: !!u.is_admin, telas: u.telas_permitidas ?? [] })
+    setDraft({ is_admin: !!u.is_admin, telas: u.telas_permitidas ?? [], verFolha: !!u.ver_folha_detalhe })
   }
 
   const toggleTela = (slug: string) => {
@@ -60,7 +60,12 @@ export function UsuariosTab() {
     const res = await fetch('/api/usuarios', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: u.id, is_admin: draft.is_admin, telas_permitidas: draft.telas }),
+      body: JSON.stringify({
+        id: u.id,
+        is_admin: draft.is_admin,
+        telas_permitidas: draft.telas,
+        ver_folha_detalhe: draft.verFolha,
+      }),
     })
     setSavingPerms(false)
     if (res.ok) {
@@ -368,6 +373,33 @@ export function UsuariosTab() {
                           Administrador enxerga todas as telas — a seleção acima é ignorada.
                         </div>
                       )}
+
+                      {/* Permissões de dado — separadas das telas de propósito:
+                          não são uma tela, são um recorte dentro de telas que o
+                          usuário já pode ver. */}
+                      <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--ink3)', textTransform: 'uppercase', letterSpacing: '0.04em', margin: '16px 0 8px' }}>
+                        Permissões de dado
+                      </div>
+                      <label
+                        style={{
+                          display: 'inline-flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+                          opacity: draft.is_admin ? 0.45 : 1,
+                          pointerEvents: draft.is_admin ? 'none' : 'auto',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.is_admin || draft.verFolha}
+                          onChange={e => setDraft(d => ({ ...d, verFolha: e.target.checked }))}
+                          style={{ marginTop: 2 }}
+                        />
+                        <span style={{ fontSize: 12, color: 'var(--ink2)' }}>
+                          <strong style={{ color: 'var(--ink)' }}>Ver folha detalhada</strong>
+                          <span style={{ display: 'block', fontSize: 11, color: 'var(--ink3)' }}>
+                            Permite visualizar detalhes individuais da folha de pagamento.
+                          </span>
+                        </span>
+                      </label>
 
                       {/* Ações */}
                       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>

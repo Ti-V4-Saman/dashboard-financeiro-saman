@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
 
 import { getUserAccess } from '@/lib/access'
+import { protegerLancamentos } from '@/lib/folha'
 
 import type { Lancamento } from '@/lib/types'
 import type { Screen } from '@/lib/screens'
@@ -253,7 +254,27 @@ export async function GET(request: Request) {
       }
     })
 
-    return NextResponse.json({ lancamentos: result, contas: listaContas }, {
+    // ── Proteção de dados individuais ──────────────────────────────────────
+    // `SCREENS_QUE_USAM` libera quem tiver QUALQUER uma das cinco telas. Está
+    // certo para o acesso ao dataset, mas não para o dado nominal: um usuário
+    // só com `visao_geral` recebia daqui o nome de cada pessoa da folha e a
+    // descrição da remuneração, sem nunca ter tido `ver_folha_detalhe`.
+    //
+    // A permissão é decidida AQUI, no servidor, a partir do mesmo `access` já
+    // carregado para o guard — nenhuma consulta a mais. Não existe query param
+    // equivalente, de propósito: o cliente não define a própria permissão.
+    //
+    // Mascara ANTES de serializar. `fornecedor` e `desc` andam juntos porque
+    // `desc` cai para `row.fornecedor` quando a descrição vem vazia (linha
+    // acima) — proteger só um deixaria o nome exposto em parte dos casos.
+    //
+    // O que NÃO muda: guard, status, contrato, filtros, período, regime,
+    // contas, cache, ordem, valores, valorDRE e quantidade. Para quem tem a
+    // permissão o payload é byte a byte o de antes.
+    const podeVerFolhaDetalhada = access.isAdmin || access.verFolhaDetalhe === true
+    const { rows: protegidos } = protegerLancamentos(result, podeVerFolhaDetalhada)
+
+    return NextResponse.json({ lancamentos: protegidos, contas: listaContas }, {
       headers: { 'Cache-Control': 'no-store' },
     })
 
