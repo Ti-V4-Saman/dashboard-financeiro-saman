@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import useSWR from 'swr'
 import {
   BarChart,
   Bar,
@@ -10,8 +11,13 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts'
-import type { Lancamento, Filters } from '@/lib/types'
-import { filtraOperacional } from '@/lib/financeiro/regime'
+import type { Filters } from '@/lib/types'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery, isForbidden } from '@/lib/agg-client'
+import {
+  aggCentrosCusto, aggDetalheCC,
+  type CentrosCustoAgg, type CCDetalheResp,
+} from '@/lib/aggregations/centrosCusto'
 import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -23,42 +29,35 @@ import {
 } from '@/components/ui/sheet'
 import { Search } from 'lucide-react'
 
+import type { Lancamento } from '@/lib/types'
+
 interface Props {
   data: Lancamento[]
   filters?: Filters
 }
 
-interface CCDetalheRow {
-  desc: string
-  contraparte: string
-  categoria: string
-  tipo: 'Receita' | 'Despesa'
-  valor: number
+/**
+ * Placeholder enquanto a resposta agregada não chegou. Zerado faz a tela cair
+ * no mesmo estado que ela já mostra quando o período não tem lançamento —
+ * transitório, e o `keepPreviousData` do SWR evita que reapareça a cada troca
+ * de filtro.
+ */
+const RESUMO_VAZIO: CentrosCustoAgg = {
+  centros: [],
+  kpiGroups: [],
+  graficos: { receitas: [], despesas: [], resultado: [] },
+  totais: { receita: 0, despesa: 0, resultado: 0, quantidadeCC: 0 },
 }
 
-// Reusa filtraOperacional → a soma do modal fecha com a barra por construção.
-function detalhePorCC(
-  data: Lancamento[],
-  regime: string,
-  ccNome: string,
-  tipoFiltro?: 'Receita' | 'Despesa'
-): CCDetalheRow[] {
-  return filtraOperacional(data, regime)
-    .filter(r =>
-      r._ccList.some(c => c.nome && c.nome !== '(em branco)' && c.nome === ccNome)
-    )
-    .filter(r => !tipoFiltro || r.tipo === tipoFiltro)
-    .map(r => ({
-      desc: r.desc,
-      contraparte: r.fornecedor,
-      categoria: r.cat1,
-      tipo: r.tipo,
-      valor: r.valor,
-    }))
-    .sort((a, b) => b.valor - a.valor)
+const DETALHE_VAZIO: CCDetalheResp = {
+  cc: '', tipo: null, rows: [],
+  totais: { rec: 0, desp: 0, resultado: 0 },
+  dadosProtegidos: false,
 }
 
 export function CentrosCusto({ data, filters }: Props) {
+  const aggOn = isAggClientEnabled()
+  const regime = filters?.regime ?? 'competencia'
   const [search, setSearch] = useState('')
 
   // Modal de conferência por CC
@@ -66,28 +65,68 @@ export function CentrosCusto({ data, filters }: Props) {
   const [tipoSel, setTipoSel] = useState<'Receita' | 'Despesa' | undefined>(undefined)
   const [open, setOpen] = useState(false)
 
-  const op = useMemo(
-    () => filtraOperacional(data, filters?.regime ?? 'competencia'),
-    [data, filters?.regime]
+  const filtros = useMemo(() => ({
+    categoria: filters?.categoria ?? [],
+    cc:        filters?.cc ?? [],
+    tipo:      filters?.tipo ?? '',
+    situacao:  filters?.situacao ?? [],
+    conta:     filters?.conta ?? [],
+  }), [filters?.categoria, filters?.cc, filters?.tipo, filters?.situacao, filters?.conta])
+
+  // ── RESUMO: os dois caminhos chamam a MESMA função ───────────────────────
+  // Com a flag ON ela roda no servidor; com OFF, aqui no browser sobre o array
+  // que o DashboardLayout já passa por prop. Uma implementação só.
+  const urlResumo = useMemo(
+    () => (aggOn && filters ? `/api/agg/centros-custo?${buildAggQuery(filters)}` : null),
+    [aggOn, filters],
+  )
+  const { data: resumoAgg, error: erroResumo } =
+    useSWR<CentrosCustoAgg>(urlResumo, aggFetcher, { keepPreviousData: true })
+
+  const resumoLocal = useMemo(
+    () => (aggOn ? null : aggCentrosCusto(data, filtros, regime)),
+    [aggOn, data, filtros, regime],
+  )
+  const resumo: CentrosCustoAgg = aggOn ? (resumoAgg ?? RESUMO_VAZIO) : resumoLocal!
+
+  const ccList     = resumo.centros
+  const kpiGroups  = resumo.kpiGroups
+  const recByCC    = resumo.graficos.receitas
+  const despByCC   = resumo.graficos.despesas
+  const resultByCC = resumo.graficos.resultado
+
+  // ── DETALHE: só ao abrir o modal ─────────────────────────────────────────
+  // Com a flag ON a requisição só existe quando há um CC selecionado — nada é
+  // buscado antecipadamente. Um erro aqui fica dentro do Sheet e não derruba a
+  // tela: o resumo já está renderizado e não depende desta chamada.
+  const urlDetalhe = useMemo(() => {
+    if (!aggOn || !filters || !ccSel || !open) return null
+    const extra: Record<string, string> = { ccSel }
+    if (tipoSel) extra.tipoSel = tipoSel
+    return `/api/agg/centros-custo/detalhe?${buildAggQuery(filters, extra)}`
+  }, [aggOn, filters, ccSel, tipoSel, open])
+
+  const { data: detalheAgg, error: erroDetalhe } =
+    useSWR<CCDetalheResp>(urlDetalhe, aggFetcher, { keepPreviousData: false })
+
+  const detalheLocal = useMemo(
+    () => (aggOn || !ccSel
+      ? null
+      // `podeVerFolhaDetalhada: true` aqui é correto e não é um furo: com a flag
+      // OFF o array já chegou de /api/financeiro MASCARADO na origem para quem
+      // não tem a permissão. Mascarar de novo seria no-op; passar `false` é que
+      // esconderia dado de quem tem direito a ver.
+      : aggDetalheCC(data, filtros, regime, ccSel, tipoSel ?? null, true)),
+    [aggOn, ccSel, data, filtros, regime, tipoSel],
   )
 
-  const linhas = useMemo(
-    () =>
-      ccSel
-        ? detalhePorCC(data, filters?.regime ?? 'competencia', ccSel, tipoSel)
-        : [],
-    [ccSel, tipoSel, data, filters?.regime]
-  )
+  const detalhe: CCDetalheResp = aggOn
+    ? (detalheAgg ?? DETALHE_VAZIO)
+    : (detalheLocal ?? DETALHE_VAZIO)
 
-  const totaisModal = useMemo(() => {
-    let rec = 0
-    let desp = 0
-    for (const l of linhas) {
-      if (l.tipo === 'Receita') rec += l.valor
-      else desp += l.valor
-    }
-    return { rec, desp, resultado: rec - desp }
-  }, [linhas])
+  const linhas = detalhe.rows
+  const totaisModal = detalhe.totais
+  const carregandoDetalhe = aggOn && !!ccSel && open && !detalheAgg && !erroDetalhe
 
   const abrir = (nome?: string, tipo?: 'Receita' | 'Despesa') => {
     if (!nome) return
@@ -96,82 +135,6 @@ export function CentrosCusto({ data, filters }: Props) {
     setTipoSel(tipo)
     setOpen(true)
   }
-
-  // Aggregate by CC
-  const ccMap = useMemo(() => {
-    const map = new Map<string, { rec: number; desp: number }>()
-    for (const r of op) {
-      for (const c of r._ccList) {
-        if (!c.nome || c.nome === '(em branco)') continue
-        if (!map.has(c.nome)) map.set(c.nome, { rec: 0, desp: 0 })
-        const entry = map.get(c.nome)!
-        if (r.tipo === 'Receita') entry.rec += r.valor
-        else entry.desp += r.valor
-      }
-    }
-    return map
-  }, [op])
-
-  const ccList = useMemo(
-    () =>
-      Array.from(ccMap.entries())
-        .map(([nome, { rec, desp }]) => ({
-          nome,
-          rec,
-          desp,
-          resultado: rec - desp,
-        }))
-        .sort((a, b) => b.desp - a.desp),
-    [ccMap]
-  )
-
-  // 5 grupos fixos de KPI
-  const kpiGroups = useMemo(() => {
-    const sum = (ccs: typeof ccList) =>
-      ccs.reduce((acc, c) => ({ rec: acc.rec + c.rec, desp: acc.desp + c.desp }), { rec: 0, desp: 0 })
-
-    const groups: { label: string; match: (n: string) => boolean }[] = [
-      { label: 'Administrativo',       match: n => n.toLowerCase().startsWith('administrativo') },
-      { label: 'Operação',             match: n => n.toLowerCase().startsWith('operação') || n.toLowerCase().startsWith('operacao') },
-      { label: 'People & Performance', match: n => n.toLowerCase().includes('people') },
-      { label: 'Aquisição e Expansão', match: n => n.toLowerCase().includes('venda') || n.toLowerCase().includes('monetização') || n.toLowerCase().includes('monetizacao') },
-      { label: 'Tecnologia',           match: n => n.toLowerCase().startsWith('tecnologia') },
-    ]
-
-    return groups.map(g => {
-      const ccs = ccList.filter(c => g.match(c.nome))
-      const { rec, desp } = sum(ccs)
-      return { label: g.label, rec, desp, resultado: rec - desp, count: ccs.length }
-    }).filter(g => g.count > 0)
-  }, [ccList])
-
-  const recByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.rec - a.rec)
-        .filter(c => c.rec > 0)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.rec })),
-    [ccList]
-  )
-
-  const despByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.desp - a.desp)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.desp })),
-    [ccList]
-  )
-
-  const resultByCC = useMemo(
-    () =>
-      [...ccList]
-        .sort((a, b) => b.resultado - a.resultado)
-        .slice(0, 15)
-        .map(c => ({ name: c.nome, value: c.resultado })),
-    [ccList]
-  )
 
   // Altura dinâmica para gráficos horizontais
   const hBarHeight = (n: number) => Math.max(200, n * 28)
@@ -182,6 +145,27 @@ export function CentrosCusto({ data, filters }: Props) {
       : ccList
     return [...list].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
   }, [ccList, search])
+
+  // ── Erro do RESUMO ────────────────────────────────────────────────────────
+  // Só no caminho agregado: com a flag OFF não há requisição para falhar.
+  // `jsonFetcher` lança em !ok, então cair no RESUMO_VAZIO em erro seria
+  // exibir uma tela zerada como se o período não tivesse dado — o oposto do
+  // que o usuário precisa saber. Mesmo tratamento que a tela de BUs já usa:
+  // 403 tem texto próprio, o resto propaga a mensagem.
+  if (aggOn && erroResumo) {
+    if (isForbidden(erroResumo)) {
+      return (
+        <div className="text-[12px]" style={{ color: 'var(--ink3)', padding: '32px 0', textAlign: 'center' }}>
+          Você não tem permissão para visualizar os Centros de Custo.
+        </div>
+      )
+    }
+    return (
+      <div className="text-[12px]" style={{ color: 'var(--red)' }}>
+        Erro ao carregar Centros de Custo: {String(erroResumo)}
+      </div>
+    )
+  }
 
   const fmtShort = (v: number) => {
     if (Math.abs(v) >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1)}M`
@@ -370,10 +354,17 @@ export function CentrosCusto({ data, filters }: Props) {
                   {tipoSel}
                 </span>
               )}
-              <span className="text-[10px]" style={{ color: 'var(--ink3)' }}>
-                {linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
-              </span>
+              {!carregandoDetalhe && !erroDetalhe && (
+                <span className="text-[10px]" style={{ color: 'var(--ink3)' }}>
+                  {linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
+            {detalhe.dadosProtegidos && (
+              <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
+                Alguns dados foram protegidos conforme sua permissão.
+              </div>
+            )}
             <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
               <span>Rec: <strong style={{ color: 'var(--green)' }}>{fR(totaisModal.rec)}</strong></span>
               <span>Desp: <strong style={{ color: 'var(--red)' }}>{fR(totaisModal.desp)}</strong></span>
@@ -386,6 +377,18 @@ export function CentrosCusto({ data, filters }: Props) {
             </div>
           </SheetHeader>
 
+          {/* Erro e carregamento vivem DENTRO do Sheet: o resumo já está na
+              tela e não depende desta chamada, então falhar aqui não pode
+              derrubar nada. Só existe no caminho agregado. */}
+          {erroDetalhe ? (
+            <div className="mt-6 text-[11px]" style={{ color: isForbidden(erroDetalhe) ? 'var(--ink3)' : 'var(--red)' }}>
+              {isForbidden(erroDetalhe)
+                ? 'Você não tem permissão para ver o detalhe deste centro de custo.'
+                : `Não foi possível carregar o detalhe: ${String(erroDetalhe)}`}
+            </div>
+          ) : carregandoDetalhe ? (
+            <div className="mt-6 text-[11px]" style={{ color: 'var(--ink3)' }}>Carregando lançamentos…</div>
+          ) : (
           <div className="mt-4">
             <table className="w-full">
               <thead>
@@ -448,6 +451,7 @@ export function CentrosCusto({ data, filters }: Props) {
               </tfoot>
             </table>
           </div>
+          )}
         </SheetContent>
       </Sheet>
     </div>
