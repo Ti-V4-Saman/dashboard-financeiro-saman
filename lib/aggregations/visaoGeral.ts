@@ -26,8 +26,8 @@ import type { Lancamento } from '@/lib/types'
  * ── DATAS: string, sem Date ────────────────────────────────────────────────
  * Tudo opera sobre 'YYYY-MM-DD'. `fDt` do projeto formata a partir de
  * componentes LOCAIS, então 'YYYY-MM-DD' → 'DD/MM/YYYY' é recorte de string,
- * sem conversão de timezone. Por isso a Visão Geral NÃO precisa de
- * `fetchLancamentosComData`.
+ * sem conversão de timezone. Por isso a Visão Geral nunca precisou de `Date`
+ * vindo da camada de query.
  *
  * `hojeYmd` é parâmetro e não `new Date()` interno: o cliente roda em GMT-3 e
  * o servidor em UTC, e às 22h BRT os dois discordariam sobre que dia é hoje —

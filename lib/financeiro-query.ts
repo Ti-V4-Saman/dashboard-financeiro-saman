@@ -1,5 +1,4 @@
 import { getPool } from '@/lib/db'
-import { parseDataLocal } from '@/lib/utils'
 import { applyFiltros, EMPTY_FILTROS, type FinanceiroFiltros } from '@/lib/financeiro-filtros'
 import { protegerLancamentos } from '@/lib/folha'
 import type { Lancamento } from '@/lib/types'
@@ -230,7 +229,13 @@ function buildQuery(regime: string): string {
  * `.map()` da rota atual, incluindo o `Math.abs` e o fallback de valorDRE.
  *
  * `data` permanece string 'YYYY-MM-DD' aqui, com o mesmo cast que a rota usa.
- * Quem precisar de `Date` chama `fetchLancamentosComData`.
+ *
+ * Nenhuma agregação precisa de `Date`. Existiu um `fetchLancamentosComData`
+ * para isso; ao fechar o Comparativo — a última tela que agrupa por mês —
+ * ficou provado que `data_ym` cobre todos os casos, e ele foi removido em vez
+ * de sobreviver como código morto. As agregações que aceitam `Date` o fazem
+ * por TOLERÂNCIA ao caminho legado, onde `useFinanceiro` já converteu; nenhuma
+ * exige a conversão vinda daqui.
  */
 function normalizeRow(row: RawRow): Lancamento {
   const isTransfer = TRANSFER_ORIGENS.has(row.origem || '')
@@ -287,23 +292,6 @@ export async function fetchLancamentos(
   const normalized = rows.map(normalizeRow)
   const { rows: protegidos } = protegerLancamentos(normalized, podeVerFolhaDetalhada)
   return applyFiltros(protegidos, filtros ?? EMPTY_FILTROS)
-}
-
-/**
- * Igual a `fetchLancamentos`, mas com `data` convertida para `Date` por
- * componentes locais — o mesmo tratamento que `hooks/useFinanceiro.ts` faz no
- * client. Descarta linhas sem data, como o hook também faz.
- *
- * Use quando a agregação depender de operações de Date; para agrupar por
- * `data_ym` a string basta e sai mais barato.
- */
-export async function fetchLancamentosComData(
-  args: FetchLancamentosArgs,
-): Promise<Lancamento[]> {
-  const rows = await fetchLancamentos(args)
-  return rows
-    .filter(r => r.data)
-    .map(r => ({ ...r, data: parseDataLocal(r.data as unknown as string) }))
 }
 
 /** Nomes distintos das contas financeiras, para a FilterBar. */
