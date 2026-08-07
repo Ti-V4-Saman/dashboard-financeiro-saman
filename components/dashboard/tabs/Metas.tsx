@@ -4,6 +4,11 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import useSWR from 'swr'
 import { safeFetcher, asArray } from '@/lib/fetchJson'
 import type { Lancamento, Filters, Meta } from '@/lib/types'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher } from '@/lib/agg-client'
+import {
+  aggMetasRealizados, type ChaveMeta, type MetasRealizadosAgg,
+} from '@/lib/aggregations/metasRealizados'
 import { fR, parseCatHier, getL2Label } from '@/lib/utils'
 import { DRE_LEAVES, NON_DRE_ROWS, KPI_ROWS, ALL_CATEGORY_LEAVES } from '@/lib/categoryTree'
 import { MetaReplicateModal } from '@/components/dashboard/metas/MetaReplicateModal'
@@ -56,29 +61,6 @@ const fetcher = safeFetcher<Meta[]>([])
 /** Filtro de "realizado" sensível ao regime contábil.
  *  Caixa  → só Quitado (pagamentos efetivos / baixas)
  *  Competência → todos os status válidos exceto Cancelado/Renegociado */
-function isRealizado(situacao: string, isCaixa: boolean): boolean {
-  if (isCaixa) return situacao === 'Quitado'
-  return situacao !== 'Cancelado' && situacao !== 'Renegociado'
-}
-
-function getRealizadoRaw(m: Meta, allData: Lancamento[], isCaixa: boolean): number {
-  const [y, mo] = m.mes_referencia.split('-').map(Number)
-  return allData
-    .filter(r => {
-      if (!r.data || r.isTransfer) return false
-      if (!isRealizado(r.situacao, isCaixa)) return false
-      if (r.tipo !== m.tipo_lancamento) return false
-      if (r.data.getFullYear() !== y || r.data.getMonth() + 1 !== mo) return false
-      if (m.tipo === 'centro_de_custo') {
-        return (r.cc1 || '').toLowerCase() === (m.centro_de_custo || '').toLowerCase()
-      } else {
-        const cat3 = m.categoria_nivel_3 || m.categoria
-        return (r.cat1 || '').toLowerCase() === (cat3 || '').toLowerCase()
-      }
-    })
-    .reduce((s, r) => s + r.valor, 0)
-}
-
 // ─── Visual config ─────────────────────────────────────────────────────────────
 
 const ROW_STYLE: Record<RowKind, { bg: string; fg: string; fw: number; fs: number; py: number }> = {
@@ -319,14 +301,58 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
   // ─── Data Processing ────────────────────────────────────────────────────────
 
   const isCaixa = (filters.regime ?? 'competencia') === 'caixa'
+  const aggOn = isAggClientEnabled()
 
-  const faturamento = useMemo(() => {
-    const from = new Date(filters.dateFrom)
-    const to   = new Date(filters.dateTo + 'T23:59:59')
-    return allData
-      .filter(r => r.data && r.tipo === 'Receita' && isRealizado(r.situacao, isCaixa) && !r.isTransfer && r.data >= from && r.data <= to)
-      .reduce((s, r) => s + r.valor, 0)
-  }, [allData, filters, isCaixa])
+  // ── Realizado: os dois caminhos chamam a MESMA função ────────────────────
+  // Com a flag ON o cálculo vai para /api/agg/metas-realizados, guardado pela
+  // própria tela `metas`. Isso resolve de lado um bug antigo: `allData` vem de
+  // /api/financeiro, cujo guard (SCREENS_QUE_USAM) NÃO inclui `metas` — quem
+  // só tem esta tela recebia 403 e via realizado zerado em tudo. O endpoint
+  // agregado não depende de permissão financeira acoplada.
+  const chaves = useMemo<ChaveMeta[]>(
+    () => metas.map(m => ({
+      mes_referencia: m.mes_referencia,
+      tipo_lancamento: m.tipo_lancamento,
+      tipo: m.tipo,
+      centro_de_custo: m.centro_de_custo,
+      categoria_nivel_3: m.categoria_nivel_3,
+      categoria: m.categoria,
+    })),
+    [metas],
+  )
+
+  const corpoRealizados = useMemo(() => JSON.stringify({
+    de: filters.dateFrom, ate: filters.dateTo,
+    regime: isCaixa ? 'caixa' : 'competencia',
+    chaves,
+  }), [filters.dateFrom, filters.dateTo, isCaixa, chaves])
+
+  const { data: realAgg } = useSWR<MetasRealizadosAgg>(
+    aggOn && chaves.length > 0 ? ['/api/agg/metas-realizados', corpoRealizados] : null,
+    async ([url, body]: [string, string]) => {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.json()
+    },
+    { keepPreviousData: true },
+  )
+
+  const realLocal = useMemo(
+    () => (aggOn ? null : aggMetasRealizados(
+      allData, chaves, isCaixa ? 'caixa' : 'competencia',
+      { de: filters.dateFrom, ate: filters.dateTo })),
+    [aggOn, allData, chaves, isCaixa, filters.dateFrom, filters.dateTo],
+  )
+
+  const realizado: MetasRealizadosAgg = aggOn
+    ? (realAgg ?? { realizados: chaves.map(() => 0), faturamento: 0, porCategoria: {} })
+    : realLocal!
+
+  const faturamento = realizado.faturamento
 
   const metasNoPeriodo = useMemo(
     () => metas.filter(m => m.mes_referencia >= fromMonth && m.mes_referencia <= toMonth),
@@ -347,11 +373,19 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
     )
   }, [metas, debSearch])
 
+  // `realizado.realizados` vem na MESMA ordem de `chaves`, que espelha `metas`.
+  // O índice liga um ao outro sem precisar de chave composta.
+  const realPorId = useMemo(() => {
+    const m = new Map<string, number>()
+    metas.forEach((meta, i) => m.set(meta.id, realizado.realizados[i] ?? 0))
+    return m
+  }, [metas, realizado])
+
   const enriched = useMemo(
     () =>
       metasNoPeriodo.map(m => {
         const sign    = m.tipo_lancamento === 'Receita' ? 1 : -1
-        const realRaw = getRealizadoRaw(m, allData, isCaixa)
+        const realRaw = realPorId.get(m.id) ?? 0
         return {
           ...m,
           planSigned: sign * m.valor_planejado,
@@ -361,23 +395,14 @@ export function MetasTab({ allData, filters, isAdmin = false }: MetasTabProps) {
           pctExec:    m.valor_planejado > 0 ? realRaw / m.valor_planejado : 0,
         }
       }),
-    [metasNoPeriodo, allData, isCaixa],
+    [metasNoPeriodo, realPorId],
   )
 
   // Valores realizados por cat1 (todos os lançamentos quitados do período)
-  const realByL3 = useMemo(() => {
-    const from = new Date(filters.dateFrom)
-    const to   = new Date(filters.dateTo + 'T23:59:59')
-    const map  = new Map<string, number>()
-    for (const r of allData) {
-      if (!r.data || r.isTransfer || !isRealizado(r.situacao, isCaixa)) continue
-      if (r.data < from || r.data > to) continue
-      if (!r.cat1) continue
-      const sign = r.tipo === 'Receita' ? 1 : -1
-      map.set(r.cat1, (map.get(r.cat1) ?? 0) + sign * r.valor)
-    }
-    return map
-  }, [allData, filters, isCaixa])
+  const realByL3 = useMemo(
+    () => new Map(Object.entries(realizado.porCategoria)),
+    [realizado],
+  )
 
   // Valores planejados por cat3 (metas enriquecidas)
   const planByL3 = useMemo(() => {
