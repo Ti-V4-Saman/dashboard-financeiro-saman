@@ -1,9 +1,27 @@
 'use client'
 
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import useSWR from 'swr'
 import { ChevronUp, ChevronDown, Search } from 'lucide-react'
-import type { Lancamento } from '@/lib/types'
-import { fR, fDt } from '@/lib/utils'
+import type { Lancamento, Filters } from '@/lib/types'
+import { isAggClientEnabled } from '@/lib/feature-aggregation'
+import { aggFetcher, buildAggQuery, isForbidden } from '@/lib/agg-client'
+import {
+  aggLancamentos, PAGE_SIZE_PADRAO,
+  type LancamentosAgg, type SortKey, type SortDir,
+} from '@/lib/aggregations/lancamentos'
+import { EMPTY_FILTROS } from '@/lib/financeiro-filtros'
+import { fR } from '@/lib/utils'
+
+/**
+ * 'YYYY-MM-DD' → 'DD/MM/YYYY'. Recorte de string, sem Date: a agregação
+ * devolve a data já normalizada e converter aqui reintroduziria o off-by-one
+ * de fuso que o backend evita mandando TO_CHAR.
+ */
+function fDtYmd(d: string | null): string {
+  if (!d || d.length < 10) return '—'
+  return `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
+}
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
@@ -17,14 +35,19 @@ import { Button } from '@/components/ui/button'
 
 interface Props {
   data: Lancamento[]
+  /** Necessário só no caminho agregado, para montar a query. */
+  filters?: Filters
 }
 
-type SortKey = 'data' | 'valor'
-type SortDir = 'asc' | 'desc'
+const PAGE_SIZE = PAGE_SIZE_PADRAO
 
-const PAGE_SIZE = 50
+const VAZIO: LancamentosAgg = {
+  rows: [], page: 1, pageSize: PAGE_SIZE, total: 0, totalPages: 1,
+  totais: { rec: 0, desp: 0, resultado: 0 }, contas: [],
+}
 
-export function Lancamentos({ data }: Props) {
+export function Lancamentos({ data, filters }: Props) {
+  const aggOn = isAggClientEnabled()
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [conta, setConta] = useState('')
@@ -48,51 +71,59 @@ export function Lancamentos({ data }: Props) {
     setPage(1)
   }, [conta])
 
-  const op = useMemo(() => data.filter(r => !r.isTransfer), [data])
+  const filtros = useMemo(() => ({
+    categoria: filters?.categoria ?? [],
+    cc:        filters?.cc ?? [],
+    tipo:      filters?.tipo ?? '',
+    situacao:  filters?.situacao ?? [],
+    conta:     filters?.conta ?? [],
+  }), [filters?.categoria, filters?.cc, filters?.tipo, filters?.situacao, filters?.conta])
 
-  const contas = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of op) {
-      if (r.conta && r.conta !== '(em branco)') set.add(r.conta)
+  const params = useMemo(() => ({
+    q: debouncedSearch, contaSel: conta,
+    sort: sortKey, dir: sortDir, page, pageSize: PAGE_SIZE,
+  }), [debouncedSearch, conta, sortKey, sortDir, page])
+
+  // ── Os dois caminhos chamam a MESMA função ───────────────────────────────
+  // Com a flag ON o servidor devolve UMA PÁGINA; com OFF a mesma função fatia
+  // o array da prop. Busca, ordenação e paginação têm uma implementação só.
+  const url = useMemo(() => {
+    if (!aggOn || !filters) return null
+    const extra: Record<string, string> = {
+      sort: params.sort, dir: params.dir,
+      page: String(params.page), pageSize: String(params.pageSize),
     }
-    return Array.from(set).sort()
-  }, [op])
+    if (params.q) extra.q = params.q
+    if (params.contaSel) extra.contaSel = params.contaSel
+    return `/api/agg/lancamentos?${buildAggQuery(filters, extra)}`
+  }, [aggOn, filters, params])
 
-  const filtered = useMemo(() => {
-    let rows = op
-    if (debouncedSearch) {
-      const q = debouncedSearch.toLowerCase()
-      rows = rows.filter(
-        r =>
-          r.desc.toLowerCase().includes(q) ||
-          r.fornecedor.toLowerCase().includes(q) ||
-          r.cat1.toLowerCase().includes(q) ||
-          r.conta.toLowerCase().includes(q) ||
-          r.cc1.toLowerCase().includes(q)
-      )
-    }
-    if (conta) rows = rows.filter(r => r.conta === conta)
-    return rows
-  }, [op, debouncedSearch, conta])
+  const { data: aggResp, error: erroAgg } =
+    useSWR<LancamentosAgg>(url, aggFetcher, { keepPreviousData: true })
 
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      if (sortKey === 'data') {
-        const ta = a.data?.getTime() || 0
-        const tb = b.data?.getTime() || 0
-        return sortDir === 'desc' ? tb - ta : ta - tb
-      } else {
-        return sortDir === 'desc' ? b.valor - a.valor : a.valor - b.valor
-      }
-    })
-  }, [filtered, sortKey, sortDir])
+  // No caminho legado `data` já vem filtrado pelo DashboardLayout, então os 5
+  // filtros aqui são no-op (idempotentes) — passar EMPTY_FILTROS produziria o
+  // mesmo resultado, mas passar os reais mantém as duas chamadas simétricas.
+  const local = useMemo(
+    () => (aggOn ? null : aggLancamentos(data, filters ? filtros : EMPTY_FILTROS, params)),
+    [aggOn, data, filters, filtros, params],
+  )
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
-  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const agg: LancamentosAgg = aggOn ? (aggResp ?? VAZIO) : local!
 
-  const recTotal = filtered.filter(r => r.tipo === 'Receita').reduce((s, r) => s + r.valor, 0)
-  const despTotal = filtered.filter(r => r.tipo === 'Despesa').reduce((s, r) => s + r.valor, 0)
-  const resultado = recTotal - despTotal
+  const contas    = agg.contas
+  const pageRows  = agg.rows
+  const totalPages = agg.totalPages
+  const totalLinhas = agg.total
+  const recTotal   = agg.totais.rec
+  const despTotal  = agg.totais.desp
+  const resultado  = agg.totais.resultado
+
+  // A página pode ter sido reduzida pelo servidor (ex.: filtro encolheu o
+  // conjunto). Segue a fonte da verdade para o controle não ficar mentindo.
+  useEffect(() => {
+    if (agg.page !== page) setPage(agg.page)
+  }, [agg.page, page])
 
   const toggleSort = useCallback(
     (key: SortKey) => {
@@ -106,6 +137,23 @@ export function Lancamentos({ data }: Props) {
     },
     [sortKey]
   )
+
+  // Erro do caminho agregado. Só existe com a flag ON; cair no VAZIO mostraria
+  // "Nenhum lançamento encontrado" como se o filtro não tivesse resultado.
+  if (aggOn && erroAgg) {
+    if (isForbidden(erroAgg)) {
+      return (
+        <div className="text-[12px]" style={{ color: 'var(--ink3)', padding: '32px 0', textAlign: 'center' }}>
+          Você não tem permissão para visualizar os Lançamentos.
+        </div>
+      )
+    }
+    return (
+      <div className="text-[12px]" style={{ color: 'var(--red)' }}>
+        Erro ao carregar Lançamentos: {String(erroAgg)}
+      </div>
+    )
+  }
 
   const SortIcon = ({ k }: { k: SortKey }) => {
     if (sortKey !== k) return <ChevronDown className="h-3 w-3 opacity-30" />
@@ -133,7 +181,7 @@ export function Lancamentos({ data }: Props) {
         </div>
         <div>
           <span className="text-[10px] font-semibold uppercase tracking-wider mr-2" style={{ color: 'var(--ink3)' }}>Qtd</span>
-          <span className="text-[13px] font-bold" style={{ color: 'var(--blue)' }}>{filtered.length.toLocaleString('pt-BR')}</span>
+          <span className="text-[13px] font-bold" style={{ color: 'var(--blue)' }}>{totalLinhas.toLocaleString('pt-BR')}</span>
         </div>
       </div>
 
@@ -196,7 +244,7 @@ export function Lancamentos({ data }: Props) {
               <tbody>
                 {pageRows.map((r, i) => (
                   <tr key={i} className="hover:bg-[var(--surf2)] transition-colors" style={{ borderBottom: '1px solid var(--line)' }}>
-                    <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(r.data)}</td>
+                    <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDtYmd(r.data)}</td>
                     <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', maxWidth: 200 }}>
                       <span className="block truncate" title={r.desc}>{r.desc}</span>
                     </td>
@@ -265,7 +313,7 @@ export function Lancamentos({ data }: Props) {
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3" style={{ borderTop: '1px solid var(--line)' }}>
               <span className="text-[11px]" style={{ color: 'var(--ink3)' }}>
-                {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} de {sorted.length.toLocaleString('pt-BR')}
+                {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, totalLinhas)} de {totalLinhas.toLocaleString('pt-BR')}
               </span>
               <div className="flex items-center gap-1">
                 <Button
