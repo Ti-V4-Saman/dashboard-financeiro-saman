@@ -1,0 +1,87 @@
+name: Backfill Notas Fiscais
+
+# TEMPORÁRIO. Backfill controlado SOMENTE de notas fiscais.
+# Só workflow_dispatch: nunca roda por schedule, push, pull_request
+# ou repository_dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'dry_run = nenhuma escrita | executar = chama sync_notas_fiscais(mode="full")'
+        required: true
+        type: choice
+        options:
+          - dry_run
+          - executar
+        default: dry_run
+      data_de:
+        description: 'Início da janela (YYYY-MM-DD). Vazio = 2015-01-01. Só afeta dry_run.'
+        required: false
+        default: ''
+      data_ate:
+        description: 'Fim da janela (YYYY-MM-DD). Vazio = 31/12 do ano corrente. Só afeta dry_run.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# MESMO grupo do ETL. Enfileira atrás de um sync em andamento; nunca cancela.
+concurrency:
+  group: etl-contaazul
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill NFS-e (${{ inputs.modo }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Instalar apenas as dependências necessárias
+        run: pip install "requests>=2.31.0" "psycopg2-binary>=2.9.9"
+
+      - name: Executar backfill
+        env:
+          # Mesmos secrets do ETL. CA_REFRESH_TOKEN entra apenas como
+          # fallback já previsto por etl/auth.py — não é lido nem impresso.
+          DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID:      ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET:  ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN:  ${{ secrets.CA_REFRESH_TOKEN }}
+          BACKFILL_MODO:     ${{ inputs.modo }}
+          BACKFILL_DATA_DE:  ${{ inputs.data_de }}
+          BACKFILL_DATA_ATE: ${{ inputs.data_ate }}
+        run: python -m etl.diagnostics.backfill_notas_fiscais
+
+      - name: Upload dos relatórios sanitizados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-notas-${{ inputs.modo }}-${{ github.run_id }}
+          path: |
+            backfill_notas_dry_run.json
+            backfill_notas_dry_run.md
+            backfill_notas_resultado.json
+            backfill_notas_resultado.md
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Snapshot pré-backfill: só existe no modo executar. Artefato separado
+      # para poder ter retenção maior e ser baixado isoladamente.
+      - name: Upload do snapshot pré-backfill
+        if: always() && inputs.modo == 'executar'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-notas-snapshot-pre-${{ github.run_id }}
+          path: backfill_notas_snapshot_pre.json
+          retention-days: 90
+          if-no-files-found: warn

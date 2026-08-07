@@ -1,17 +1,30 @@
 'use client'
 
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { ChevronUp, ChevronDown, Search } from 'lucide-react'
+import { ChevronUp, ChevronDown, Search, ExternalLink, Copy, Check } from 'lucide-react'
 import type { Filters } from '@/lib/types'
 import { fR } from '@/lib/utils'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 // ── Tipos (espelham /api/notas-fiscais) ───────────────────────────────────────
+
+// Origem é INDEPENDENTE do status: uma nota pode ser EMITIDA e, ao mesmo
+// tempo, escriturada manualmente. Nunca tratar origem como falha.
+type OrigemNota = 'emitida_conta_azul' | 'escriturada_manualmente' | 'nao_identificada'
 
 interface NotaRow {
   id: string
   kind: 'emitida' | 'cancelada' | 'falha' | 'recebido_sem_nf' | 'a_receber'
+  origem: OrigemNota
+  escriturado_manualmente: boolean | null
   numero: number | null
   lancamento: string
   cliente: string
@@ -107,7 +120,35 @@ function StatusBadge({ kind }: { kind: NotaRow['kind'] }) {
   )
 }
 
+// ── Origem Badge ─────────────────────────────────────────────────────────────
+
+function OrigemBadge({ origem }: { origem: OrigemNota }) {
+  const cfg: Record<OrigemNota, { label: string; bg: string; fg: string }> = {
+    emitida_conta_azul:      { label: 'Emitida pelo Conta Azul', bg: 'var(--green-l)', fg: 'var(--green)' },
+    escriturada_manualmente: { label: 'Escriturada manualmente', bg: 'var(--amber-l)', fg: 'var(--amber)' },
+    nao_identificada:        { label: 'Origem não identificada', bg: 'var(--surf3)',   fg: 'var(--ink3)' },
+  }
+  const c = cfg[origem]
+  return (
+    <span style={{
+      background: c.bg, color: c.fg,
+      padding: '2px 9px', borderRadius: 4,
+      fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+    }}>{c.label}</span>
+  )
+}
+
 // ── Componente principal ─────────────────────────────────────────────────────
+
+// Listagem de NFS-e no Conta Azul. Não há deep link para nota ou venda
+// individual — a SPA do Conta Azul não coloca nenhum identificador na URL
+// (verificado em jul/2026). Por isso o link é só da listagem, e o número da
+// nota fica copiável por linha para colar na busca de lá.
+const CA_NFSE_URL = 'https://pro.contaazul.com/#/ca/notas-fiscais/notas-fiscais-de-servico'
+
+// Só estes kinds representam uma nota real. recebido_sem_nf e a_receber são
+// vendas sem nota, então não têm origem e ficam fora do filtro de origem.
+const KINDS_COM_NOTA = new Set<NotaRow['kind']>(['emitida', 'cancelada', 'falha'])
 
 const PAGE_SIZE = 50
 
@@ -126,7 +167,10 @@ export function NotasFiscais({ filters }: Props) {
   const [sortKey, setSortKey]     = useState<SortKey>('data')
   const [sortDir, setSortDir]     = useState<SortDir>('desc')
   const [page, setPage]           = useState(1)
+  const [origemFilter, setOrigemFilter] = useState<'todas' | OrigemNota>('todas')
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Debounce de busca
   useEffect(() => {
@@ -140,8 +184,25 @@ export function NotasFiscais({ filters }: Props) {
     }
   }, [search])
 
-  // Reset page quando filtro muda
-  useEffect(() => { setPage(1) }, [filterKey])
+  // Reset page quando filtro muda (status ou origem). Busca, período e regime
+  // ficam intactos: são estados independentes.
+  useEffect(() => { setPage(1) }, [filterKey, origemFilter])
+
+  // Limpa o timer do feedback "Copiado" ao desmontar
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+  }, [])
+
+  const copiarNumero = async (key: string, numero: number) => {
+    try {
+      await navigator.clipboard.writeText(String(numero))
+    } catch {
+      return   // clipboard indisponível — não dá feedback falso de sucesso
+    }
+    setCopiedKey(key)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopiedKey(null), 1500)
+  }
 
   // Fetch
   useEffect(() => {
@@ -171,6 +232,11 @@ export function NotasFiscais({ filters }: Props) {
     else if (filterKey === 'a_receber')       arr = arr.filter(r => r.kind === 'a_receber')
     else if (filterKey === 'cancelada_falha')
                                           arr = arr.filter(r => r.kind === 'cancelada' || r.kind === 'falha')
+    // Filtro de origem: client-side, sobre o array já carregado. Só considera
+    // linhas que são de fato uma nota — vendas sem NF não têm origem.
+    if (origemFilter !== 'todas') {
+      arr = arr.filter(r => KINDS_COM_NOTA.has(r.kind) && r.origem === origemFilter)
+    }
     if (debouncedSearch) {
       const q = debouncedSearch.toLowerCase()
       arr = arr.filter(r =>
@@ -180,7 +246,7 @@ export function NotasFiscais({ filters }: Props) {
       )
     }
     return arr
-  }, [data, filterKey, debouncedSearch])
+  }, [data, filterKey, origemFilter, debouncedSearch])
 
   const rowsOrdenadas = useMemo(() => {
     const arr = [...rowsFiltradas]
@@ -279,11 +345,25 @@ export function NotasFiscais({ filters }: Props) {
                 style={{ paddingLeft: 30, fontSize: 12, height: 32 }}
               />
             </div>
+            <Select
+              value={origemFilter}
+              onValueChange={v => setOrigemFilter(v as 'todas' | OrigemNota)}
+            >
+              <SelectTrigger className="w-[190px]" aria-label="Filtrar por origem da nota">
+                <SelectValue placeholder="Origem" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todas">Todas as origens</SelectItem>
+                <SelectItem value="emitida_conta_azul">Emitidas pelo Conta Azul</SelectItem>
+                <SelectItem value="escriturada_manualmente">Escrituradas manualmente</SelectItem>
+                <SelectItem value="nao_identificada">Origem não identificada</SelectItem>
+              </SelectContent>
+            </Select>
             <span className="text-[11px]" style={{ color: 'var(--ink3)' }}>
               {loading ? 'carregando…' : `${rowsOrdenadas.length} registro(s)`}
-              {filterKey !== 'todas' && (
+              {(filterKey !== 'todas' || origemFilter !== 'todas') && (
                 <button
-                  onClick={() => setFilterKey('todas')}
+                  onClick={() => { setFilterKey('todas'); setOrigemFilter('todas') }}
                   className="ml-3 text-[10px]"
                   style={{ color: 'var(--brand)', textDecoration: 'underline' }}
                 >
@@ -291,6 +371,23 @@ export function NotasFiscais({ filters }: Props) {
                 </button>
               )}
             </span>
+            <a
+              href={CA_NFSE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Abre a listagem de NFS-e no Conta Azul em uma nova aba. O Conta Azul não permite abrir uma nota específica por link — use o botão de copiar número para localizá-la lá."
+              aria-label="Abrir Notas Fiscais no Conta Azul em nova aba"
+              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium"
+              style={{
+                border: '1px solid var(--line)',
+                color: 'var(--ink2)',
+                background: 'var(--surface)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <ExternalLink style={{ width: 12, height: 12 }} />
+              Abrir Notas Fiscais no Conta Azul
+            </a>
           </div>
         </CardHeader>
 
@@ -316,14 +413,16 @@ export function NotasFiscais({ filters }: Props) {
                       Tempo
                     </Th>
                     <Th>Status</Th>
+                    <Th>Origem</Th>
+                    <Th>{''}</Th>
                   </tr>
                 </thead>
                 <tbody>
                   {loading && (
-                    <tr><td colSpan={7} className="py-6 text-center" style={{ color: 'var(--ink3)' }}>Carregando…</td></tr>
+                    <tr><td colSpan={9} className="py-6 text-center" style={{ color: 'var(--ink3)' }}>Carregando…</td></tr>
                   )}
                   {!loading && pageRows.length === 0 && (
-                    <tr><td colSpan={7} className="py-6 text-center" style={{ color: 'var(--ink3)' }}>Sem registros</td></tr>
+                    <tr><td colSpan={9} className="py-6 text-center" style={{ color: 'var(--ink3)' }}>Sem registros</td></tr>
                   )}
                   {!loading && pageRows.map(r => (
                     <tr key={`${r.kind}::${r.id}`} style={{ borderBottom: '0.5px solid var(--line)' }}>
@@ -338,6 +437,18 @@ export function NotasFiscais({ filters }: Props) {
                       <Td>{r.data_emissao ? formatDate(r.data_emissao) : '—'}</Td>
                       <Td align="right">{r.tempo_emissao_dias != null ? `${r.tempo_emissao_dias} d` : '—'}</Td>
                       <Td><StatusBadge kind={r.kind} /></Td>
+                      <Td>
+                        {/* Vendas sem nota não têm origem — não exibe badge. */}
+                        {KINDS_COM_NOTA.has(r.kind) ? <OrigemBadge origem={r.origem} /> : '—'}
+                      </Td>
+                      <Td align="right">
+                        <CopiarNumeroNota
+                          numero={r.numero}
+                          kind={r.kind}
+                          copiado={copiedKey === `${r.kind}::${r.id}`}
+                          onCopiar={() => { if (r.numero != null) copiarNumero(`${r.kind}::${r.id}`, r.numero) }}
+                        />
+                      </Td>
                     </tr>
                   ))}
                 </tbody>
@@ -368,6 +479,60 @@ export function NotasFiscais({ filters }: Props) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// ── Ação: copiar número da nota ──────────────────────────────────────────────
+
+function CopiarNumeroNota({
+  numero,
+  kind,
+  copiado,
+  onCopiar,
+}: {
+  numero: number | null
+  kind: NotaRow['kind']
+  copiado: boolean
+  onCopiar: () => void
+}) {
+  // recebido_sem_nf e a_receber são vendas sem nota emitida: não há número
+  // a copiar, e o motivo é diferente de "nota sem número".
+  const semNotaAinda = kind === 'recebido_sem_nf' || kind === 'a_receber'
+  const disabled = semNotaAinda || numero == null
+  const label = semNotaAinda
+    ? 'Nota ainda não disponível'
+    : numero == null
+      ? 'Sem número de nota'
+      : 'Copiar número da nota'
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onCopiar}
+      title={label}
+      aria-label={label}
+      className="inline-flex items-center justify-center gap-1 px-1.5 py-0.5 rounded"
+      style={{
+        border: '1px solid var(--line)',
+        background: 'transparent',
+        color: copiado ? 'var(--green)' : 'var(--ink3)',
+        opacity: disabled ? 0.35 : 1,
+        cursor: disabled ? 'default' : 'pointer',
+        fontSize: 10,
+        minWidth: 58,          // largura fixa: evita reflow ao trocar para "Copiado"
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {copiado ? (
+        <>
+          <Check style={{ width: 11, height: 11 }} />
+          Copiado
+        </>
+      ) : (
+        <Copy style={{ width: 11, height: 11 }} />
+      )}
+    </button>
   )
 }
 

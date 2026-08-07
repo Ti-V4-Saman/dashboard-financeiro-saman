@@ -14,11 +14,25 @@
  *
  * Operação e Receita sempre vêm (mesmo zeradas, pra fixar as tabs).
  * Não Operacional e Sem Categoria só vêm se houver lançamentos.
+ *
+ * ── Proteção de dados individuais ──────────────────────────────────────────
+ * A lista `lancamentos` de cada BU é individual, não agregada: sai daqui uma
+ * linha por lançamento com `descricao` e `contraparte`. Como esta rota monta o
+ * próprio SQL, ela NÃO passa por `fetchLancamentos` e ficou de fora da proteção
+ * central instalada na Fase 2 — expunha 258 lançamentos de remuneração,
+ * comissão e pró-labore (R$ 959.476,05 em 2026) a quem tem a tela `bus` sem
+ * `ver_folha_detalhe`.
+ *
+ * A proteção é aplicada sobre as linhas cruas, logo após a query e antes de
+ * qualquer cálculo. Só `descricao` e `contraparte` das categorias da allowlist
+ * mudam; valor, data, categoria, CC, situação, tipo, BU, KPIs, evolução, tops,
+ * quantidade e ordem seguem intactos.
  */
 
 import { NextResponse } from 'next/server'
 import { getPool } from '@/lib/db'
-import { requireScreen } from '@/lib/access'
+import { getUserAccess } from '@/lib/access'
+import { protegerLancamentosBU } from '@/lib/folha'
 import type { BU, BuData, BusApiResponse, BuKpis, BuEvolucaoPonto, BuTopItem, BuLancamento } from '@/lib/types/bus'
 
 export const dynamic = 'force-dynamic'
@@ -386,8 +400,22 @@ const FETCH_SQL = `
 `
 
 export async function GET(request: Request) {
-  const denied = await requireScreen('bus')
-  if (denied) return denied
+  // Mesma regra de acesso de antes — admin OU a tela `bus`, 403 antes de
+  // qualquer consulta. Trocamos `requireScreen('bus')` por `getUserAccess()`
+  // porque precisamos de `verFolhaDetalhe` do mesmo objeto; `requireScreen`
+  // internamente já chama `getUserAccess`, então não há consulta a mais.
+  // Nenhuma outra tela passa a dar acesso.
+  const acc = await getUserAccess()
+  if (!acc.isAdmin && !acc.telasPermitidas.includes('bus')) {
+    return NextResponse.json(
+      { error: 'Sem permissão para acessar esta tela.' },
+      { status: 403 },
+    )
+  }
+
+  // Decidido no SERVIDOR. Não existe query param nem campo de corpo capaz de
+  // influenciar isto — de propósito.
+  const podeVerFolhaDetalhada = acc.isAdmin || acc.verFolhaDetalhe === true
 
   const { searchParams } = new URL(request.url)
   const de  = searchParams.get('de')
@@ -435,9 +463,18 @@ export async function GET(request: Request) {
       ])
       const dbMs = Date.now() - t0
 
-      const byBuPeriodo = groupByBu(periodoRes.rows)
-      const byBuM1      = groupByBu(m1Res.rows)
-      const byBuEvol    = groupByBu(evolRes.rows)
+      // Proteção ANTES de agrupar, calcular e serializar. As três janelas
+      // passam pelo mesmo filtro para que nenhum caminho — período, M-1 ou
+      // evolução — carregue o texto original.
+      //
+      // KPIs, evolução, tops e o agrupamento por BU leem só `valor`,
+      // `categoria_nome`, `tipo`, `data_ym` e `bu`; nenhum deles toca
+      // `descricao` ou `contraparte_nome`. Mascarar aqui portanto não altera
+      // um único número — apenas impede que o original chegue ao JSON.
+      const periodoRows = protegerLancamentosBU(periodoRes.rows, podeVerFolhaDetalhada)
+      const byBuPeriodo = groupByBu(periodoRows.rows)
+      const byBuM1      = groupByBu(protegerLancamentosBU(m1Res.rows,   podeVerFolhaDetalhada).rows)
+      const byBuEvol    = groupByBu(protegerLancamentosBU(evolRes.rows, podeVerFolhaDetalhada).rows)
 
       const bus: BuData[] = []
 

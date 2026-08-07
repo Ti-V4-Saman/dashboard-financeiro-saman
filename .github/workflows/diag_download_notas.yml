@@ -1,0 +1,56 @@
+name: Diagnóstico Download NFS-e
+
+# TEMPORÁRIO. Somente diagnóstico: nenhuma escrita em tabelas de dados,
+# nenhum arquivo fiscal salvo, teto de 10 requisições.
+# Só workflow_dispatch: nunca schedule, push, pull_request ou repository_dispatch.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# MESMO grupo do ETL. Enfileira atrás de um sync em andamento; nunca cancela.
+concurrency:
+  group: etl-contaazul
+  cancel-in-progress: false
+
+jobs:
+  diag:
+    name: Testar endpoints de arquivo com OAuth
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Instalar apenas as dependências necessárias
+        run: pip install "requests>=2.31.0" "psycopg2-binary>=2.9.9"
+
+      - name: Executar diagnóstico
+        env:
+          # Mesmos secrets do ETL. CA_REFRESH_TOKEN apenas como fallback já
+          # previsto por etl/auth.py — não é lido nem impresso pelo script.
+          DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+          CA_CLIENT_ID:      ${{ secrets.CA_CLIENT_ID }}
+          CA_CLIENT_SECRET:  ${{ secrets.CA_CLIENT_SECRET }}
+          CA_REFRESH_TOKEN:  ${{ secrets.CA_REFRESH_TOKEN }}
+        run: python -m etl.diagnostics.diag_download_notas
+
+      - name: Upload do relatório sanitizado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-download-notas-${{ github.run_id }}
+          # Só os dois relatórios. Nenhum .pdf/.xml é gerado pelo script,
+          # e nenhum padrão de arquivo binário é incluído aqui.
+          path: |
+            diag_download_notas.json
+            diag_download_notas.md
+          retention-days: 7
+          if-no-files-found: warn
