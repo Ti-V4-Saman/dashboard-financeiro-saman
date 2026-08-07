@@ -3,14 +3,18 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { X, ChevronDown, ChevronLeft, ChevronRight, Check, Search } from 'lucide-react'
 import type { Filters, Lancamento, TipoPeriodo, Atalho } from '@/lib/types'
+import { aggFacets, type FacetsAgg } from '@/lib/aggregations/facets'
 import { resolveAtalho } from '@/hooks/useFinanceiro'
 
 interface FilterBarProps {
   filters: Filters
   setFilters: (f: Filters) => void
   clearAll: () => void
+  /** Caminho legado. Com AGG_BACKEND ON chega vazio e as facetas vêm da rota. */
   allData: Lancamento[]
   listaContas: string[]
+  /** Facetas server-side. Presente só no caminho agregado. */
+  facets?: FacetsAgg | null
   /** Tab ativa do dashboard. Permite desabilitar controles que não fazem
    *  sentido em telas específicas (ex.: regime caixa na tab BUs). */
   activeTab?: string
@@ -787,38 +791,24 @@ function Sep() {
 
 // ── FilterBar (public export) ─────────────────────────────────────────────────
 
-export function FilterBar({ filters, setFilters, clearAll, allData, listaContas, activeTab }: FilterBarProps) {
+export function FilterBar({ filters, setFilters, clearAll, allData, listaContas, facets, activeTab }: FilterBarProps) {
   const update = <K extends keyof Filters>(key: K, val: Filters[K]) =>
     setFilters({ ...filters, [key]: val })
 
   const patchFilters = (patch: Partial<Filters>) =>
     setFilters({ ...filters, ...patch })
 
-  // Dynamic options from data
-  const categorias = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of allData)
-      for (const c of r.categorias)
-        if (c.nome && c.nome !== '(em branco)') set.add(c.nome)
-    return Array.from(set).sort()
-  }, [allData])
-
-  const centrosCusto = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of allData)
-      for (const c of r._ccList)
-        if (c.nome && c.nome !== '(em branco)') set.add(c.nome)
-    return Array.from(set).sort()
-  }, [allData])
-
-  const situacoes = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of allData)
-      if (r.situacao && r.situacao !== '(em branco)') set.add(r.situacao)
-    return Array.from(set).sort()
-  }, [allData])
-
-  const contas = useMemo(() => listaContas.sort(), [listaContas])
+  // Opções dos selects. Os dois caminhos passam pela MESMA função: com a flag
+  // ON as facetas chegam prontas da rota; com OFF são derivadas aqui de
+  // `allData`, exatamente como antes.
+  const derivadas = useMemo(
+    () => (facets ?? aggFacets(allData, listaContas)),
+    [facets, allData, listaContas],
+  )
+  const categorias   = derivadas.categorias
+  const centrosCusto = derivadas.centrosCusto
+  const situacoes    = derivadas.situacoes
+  const contas       = derivadas.contas
 
   // "Limpar tudo" shows if any non-default filter is active
   const hasFilters =
