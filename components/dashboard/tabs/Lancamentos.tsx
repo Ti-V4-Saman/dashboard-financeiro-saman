@@ -119,11 +119,39 @@ export function Lancamentos({ data, filters }: Props) {
   const despTotal  = agg.totais.desp
   const resultado  = agg.totais.resultado
 
-  // A página pode ter sido reduzida pelo servidor (ex.: filtro encolheu o
-  // conjunto). Segue a fonte da verdade para o controle não ficar mentindo.
+  // A página pedida pode ter deixado de existir (ex.: um filtro encolheu o
+  // conjunto). Nesse caso o controle precisa recuar, senão fica mentindo.
+  //
+  // ── POR QUE `totalPages` E NÃO `agg.page` ─────────────────────────────────
+  // Antes esta reconciliação era `if (agg.page !== page) setPage(agg.page)`, e
+  // ela QUEBRAVA a navegação: com `keepPreviousData: true`, no instante em que
+  // a chave muda para page=2 o SWR ainda devolve a resposta da page=1. O efeito
+  // via agg.page=1 contra page=2 e voltava para 1 — antes de a resposta nova
+  // chegar. A sequência observada era page=1 → page=2 → page=1, sempre parada
+  // na primeira página.
+  //
+  // A correção não tenta descobrir se a resposta é fresca. Ela usa um dado que
+  // NÃO depende de qual página foi pedida: `totalPages` sai de
+  // `ceil(linhas / pageSize)` em `aggLancamentos`, ou seja, só do conjunto
+  // filtrado. Então uma resposta "anterior" causada por troca de página traz o
+  // MESMO totalPages e este efeito não dispara.
+  //
+  // Continua equivalente ao clamp do servidor: lá `page = min(max(1, pedida),
+  // totalPages)`, e como `page` local nunca é < 1, a única divergência possível
+  // é `pedida > totalPages` — exatamente o que se testa aqui, com o mesmo
+  // destino (`totalPages`).
+  //
+  // Quando é um filtro que encolhe o conjunto, a resposta anterior traz o
+  // totalPages ANTIGO — e aí também não dispara, porque a página corrente
+  // sempre respeitou aquele limite. O recuo acontece quando a resposta nova
+  // chega com o totalPages menor, que é o momento certo.
+  //
+  // Sem dependência de `isValidating`/`isLoading`: a correção não depende de
+  // como o SWR sinaliza staleness, e o caminho OFF (síncrono) se comporta
+  // exatamente como antes.
   useEffect(() => {
-    if (agg.page !== page) setPage(agg.page)
-  }, [agg.page, page])
+    if (page > agg.totalPages) setPage(agg.totalPages)
+  }, [page, agg.totalPages])
 
   const toggleSort = useCallback(
     (key: SortKey) => {
