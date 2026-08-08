@@ -147,7 +147,43 @@ export function parseLinhaId(linhaId: string): LinhaRef {
   throw new LinhaRefInvalida('formato de linhaId não suportado')
 }
 
-/** Reconstrói o predicado no SERVIDOR. Espelha matcherForRow (DRE.tsx:185-223). */
+/**
+ * Inverso exato de `parseLinhaId`. Existe para o CLIENTE: o componente monta o
+ * `LinhaRef` da linha clicada e precisa mandá-lo na query string do endpoint de
+ * detalhe — matcher é função e não atravessa HTTP.
+ *
+ * NENHUMA REGRA NASCE AQUI. A allowlist de subtotais, os quatro níveis e o
+ * separador são os mesmos objetos que `parseLinhaId` lê logo acima; esta função
+ * só escreve o que aquela lê. O teste de round-trip
+ * (`parseLinhaId(serializeLinhaRef(ref))` === ref) prova a simetria e quebra na
+ * hora se alguém mexer em um lado só.
+ *
+ * Devolve `null` — em vez de uma string que não volta — quando o ref não é
+ * serializável sem ambiguidade: subtotal fora da allowlist, campo vazio, ou
+ * rótulo de L2 contendo o separador. O chamador trata `null` como "sem chave":
+ * nenhuma requisição sai, e o 400 do servidor nunca chega a ser necessário.
+ */
+export function serializeLinhaRef(ref: LinhaRef): string | null {
+  switch (ref.kind) {
+    case 'subtotal':
+      // Mesma checagem do parse, pelo mesmo motivo: '__proto__' não é subtotal.
+      return Object.prototype.hasOwnProperty.call(SUBTOTAIS, ref.id) ? ref.id : null
+    case 'l1':
+      return ref.l1 ? `l1:${ref.l1}` : null
+    case 'l2':
+      if (!ref.l1 || !ref.l2) return null
+      // `parseLinhaId` corta o l2 no primeiro '|'. Um rótulo que contivesse o
+      // separador voltaria diferente do que saiu — hoje não acontece (os
+      // rótulos são '4 — Despesas' e '4.1'), e recusar aqui mantém o
+      // round-trip verdadeiro por construção, não por sorte.
+      if (ref.l1.includes('|') || ref.l2.includes('|')) return null
+      return `l2:${ref.l1}|${ref.l2}`
+    case 'l3':
+      return ref.cat1 ? `l3:${ref.cat1}` : null
+  }
+}
+
+/** Reconstrói o predicado no SERVIDOR. Espelha linhaRefForRow (DRE.tsx). */
 export function matcherFromLinhaRef(ref: LinhaRef): (r: Lancamento) => boolean {
   switch (ref.kind) {
     case 'subtotal': {

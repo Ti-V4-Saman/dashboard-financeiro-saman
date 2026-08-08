@@ -3,13 +3,14 @@
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import type { Lancamento, Filters } from '@/lib/types'
-import { detalheDRE } from '@/lib/financeiro/regime'
 import { useAccess } from '@/lib/useAccess'
-import { protegerDetalheFolha } from '@/lib/folha'
 import { isAggClientEnabled } from '@/lib/feature-aggregation'
-import { aggFetcher, buildAggQuery } from '@/lib/agg-client'
-import { aggResumoDRE, matcherFromLinhaRef, type ResumoDRE } from '@/lib/aggregations/dre'
-import { fR, fDt, mLbl } from '@/lib/utils'
+import { aggFetcher, buildAggQuery, isForbidden } from '@/lib/agg-client'
+import {
+  aggResumoDRE, aggDetalheDRE, serializeLinhaRef,
+  type ResumoDRE, type LinhaRef, type DetalheRow, type DetalheDREResp,
+} from '@/lib/aggregations/dre'
+import { fR, mLbl } from '@/lib/utils'
 import {
   Sheet,
   SheetContent,
@@ -184,38 +185,60 @@ function KpiRow({ label, value, color, tip }: { label: string; value: string; co
   )
 }
 
-// ─── Matcher para o modal de conferência ──────────────────────────────────────
+// ─── Referência da linha para o modal de conferência ─────────────────────────
 /**
- * Traduz a linha clicada num predicado — DELEGANDO para
- * `matcherFromLinhaRef` de lib/aggregations/dre.
+ * Traduz a linha clicada num `LinhaRef` — a estrutura fechada que
+ * lib/aggregations/dre já define e que os DOIS caminhos consomem:
  *
- * Antes esta função carregava sua própria cópia da tabela de subtotais, com os
- * limites 2.99 / 3.99 / 4.99 / 5.99 / 6.99 repetidos, e o comentário aqui
- * pedia para "mudar nos dois lugares". Não deu certo: Lucro Líquido ficou como
- * `() => true` enquanto a célula usava `groupSum(col, 99)`, e clicar na linha
- * listava o grupo 'Outros' inteiro — R$ 792.066,84 a mais em 2026.
+ *   OFF → `aggDetalheDRE(..., ref, ...)`, que chama `matcherFromLinhaRef`
+ *   ON  → `serializeLinhaRef(ref)` vira `linhaId` na query, e o servidor
+ *         reconstrói o MESMO predicado com `parseLinhaId` + `matcherFromLinhaRef`
  *
- * Agora existe uma regra só (`grupoDentroDoLimite`), usada tanto para calcular
- * a célula quanto para montar o detalhe. Os dois caminhos da flag também
- * passam a produzir exatamente a mesma população.
+ * Antes esta função devolvia o matcher já resolvido, e por isso o detalhe só
+ * existia no browser: função não atravessa HTTP. Devolver a REFERÊNCIA em vez
+ * do predicado é o que permite a mesma linha clicada valer nos dois lados.
+ *
+ * Antes disso, ela ainda carregava sua própria cópia da tabela de subtotais,
+ * com os limites 2.99 / 3.99 / 4.99 / 5.99 / 6.99 repetidos, e um comentário
+ * pedindo para "mudar nos dois lugares". Não deu certo: Lucro Líquido ficou
+ * como `() => true` enquanto a célula usava `groupSum(col, 99)`, e clicar na
+ * linha listava o grupo 'Outros' inteiro — R$ 792.066,84 a mais em 2026. Hoje
+ * existe uma regra só (`grupoDentroDoLimite`), e nenhuma cópia aqui.
  */
-function matcherForRow(row: DRERow): (r: Lancamento) => boolean {
+function linhaRefForRow(row: DRERow): LinhaRef | null {
   switch (row.kind) {
     case 'l1':
-      return matcherFromLinhaRef({ kind: 'l1', l1: row.l1Key ?? '' })
+      return row.l1Key ? { kind: 'l1', l1: row.l1Key } : null
     case 'l2':
-      return matcherFromLinhaRef({ kind: 'l2', l1: row.l1Key ?? '', l2: row.l2Key ?? '' })
+      return row.l1Key && row.l2Key
+        ? { kind: 'l2', l1: row.l1Key, l2: row.l2Key }
+        : null
     case 'l3':
-      return matcherFromLinhaRef({ kind: 'l3', cat1: row.label })
+      return row.label ? { kind: 'l3', cat1: row.label } : null
     case 'subtotal':
     case 'ebitda':
     case 'resultado':
-      // `matcherFromLinhaRef` devolve `() => false` para id fora da allowlist,
-      // que é o mesmo default de antes.
-      return matcherFromLinhaRef({ kind: 'subtotal', id: row.id })
+      // Id fora da allowlist não vira ref: `serializeLinhaRef` devolve null e
+      // `matcherFromLinhaRef` devolveria `() => false`. Mesmo default de antes.
+      return { kind: 'subtotal', id: row.id }
     default:
-      return () => false
+      return null
   }
+}
+
+/**
+ * 'YYYY-MM-DD' → 'DD/MM/YYYY'.
+ *
+ * O detalhe trafega data como STRING estável nos dois caminhos da flag —
+ * `aggDetalheDRE` normaliza pelos componentes locais no browser e o Postgres
+ * já devolve nesse formato no servidor. Formatar a string aqui, em vez de
+ * reconstruir um `Date` só para chamar `fDt`, tira o fuso da equação: não
+ * existe hora, então não existe deslocamento de dia.
+ */
+function fDtYmd(s: string | null | undefined): string {
+  if (!s || s.length < 10) return '—'
+  const [y, mo, d] = s.split('-')
+  return `${d}/${mo}/${y}`
 }
 
 // "2026-06" → "Junho/2026"
@@ -226,12 +249,7 @@ function periodoLabel(mes: string | undefined, dateFrom?: string, dateTo?: strin
     const [y, m] = mes.split('-').map(Number)
     return `${MES_NOME[m - 1]}/${y}`
   }
-  const fmt = (s?: string) => {
-    if (!s || s.length < 10) return s || '—'
-    const [y, mo, d] = s.split('-')
-    return `${d}/${mo}/${y}`
-  }
-  if (dateFrom && dateTo) return `${fmt(dateFrom)} → ${fmt(dateTo)}`
+  if (dateFrom && dateTo) return `${fDtYmd(dateFrom)} → ${fDtYmd(dateTo)}`
   return '—'
 }
 
@@ -259,6 +277,11 @@ const RESUMO_VAZIO: ResumoDRE = {
     despExpansao: 0, proLabore: 0, growthRate: null,
   },
   totalOperacional: 0,
+}
+
+/** Mesmo papel do RESUMO_VAZIO, para o detalhe: Sheet aberto e resposta a caminho. */
+const DETALHE_VAZIO: DetalheDREResp = {
+  titulo: '', total: 0, dadosProtegidos: false, rows: [],
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -297,10 +320,11 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   const toggleL2 = (l2: string) =>
     setExp2(prev => { const n = new Set(prev); n.has(l2) ? n.delete(l2) : n.add(l2); return n })
 
-  // Modal de conferência por linha
+  // Modal de conferência por linha. Guarda a REFERÊNCIA da linha, não o
+  // predicado: é ela que serve aos dois caminhos da flag (ver linhaRefForRow).
   const [linhaSel, setLinhaSel] = useState<{
     label: string
-    matcher: (r: Lancamento) => boolean
+    ref: LinhaRef
     kind: 'n3' | 'agrupador' | 'subtotal'
   } | null>(null)
   const [mesSel, setMesSel] = useState<string | undefined>(undefined)
@@ -313,14 +337,45 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
   // esqueça de proteger — mascarar o que já está mascarado não muda nada.
   const { verFolhaDetalhe } = useAccess()
 
-  const { linhasModal, dadosProtegidos } = useMemo(() => {
-    if (!linhaSel) return { linhasModal: [], dadosProtegidos: false }
-    const brutas = detalheDRE(data, filters?.regime ?? 'competencia', linhaSel.matcher, mesSel)
-    // Mascara POR LANÇAMENTO: num subtotal misto, as linhas comuns seguem
-    // completas e só as de folha são protegidas. Quantidade e total intactos.
-    const { rows, dadosProtegidos } = protegerDetalheFolha(brutas, verFolhaDetalhe)
-    return { linhasModal: rows, dadosProtegidos }
-  }, [linhaSel, mesSel, data, filters?.regime, verFolhaDetalhe])
+  // ── DETALHE: só ao abrir o Sheet ─────────────────────────────────────────
+  // Com a flag ON a requisição só existe quando há linha selecionada E o Sheet
+  // está aberto — nada é buscado antecipadamente, fechar não dispara nada, e
+  // trocar de linha ou de mês muda a chave e refaz a busca.
+  //
+  // Este componente NÃO pode montar o detalhe a partir da prop `data`: com a
+  // flag ON o DashboardLayout não busca mais /api/financeiro fora da aba
+  // Qualidade, então `data` chega vazio. Era exatamente esse o bug — o Sheet
+  // abria com 0 lançamentos e nenhuma requisição saía.
+  const linhaId = useMemo(
+    () => (linhaSel ? serializeLinhaRef(linhaSel.ref) : null),
+    [linhaSel],
+  )
+
+  const urlDetalhe = useMemo(() => {
+    if (!aggOn || !filters || !linhaId || !open) return null
+    const extra: Record<string, string> = { linhaId }
+    if (mesSel) extra.mes = mesSel
+    return `/api/agg/dre/detalhe?${buildAggQuery(filters, extra)}`
+  }, [aggOn, filters, linhaId, mesSel, open])
+
+  const { data: detalheAgg, error: erroDetalhe } =
+    useSWR<DetalheDREResp>(urlDetalhe, aggFetcher, { keepPreviousData: false })
+
+  const detalheLocal = useMemo(
+    () => (aggOn || !linhaSel
+      ? null
+      // A MESMA função que o endpoint executa. `verFolhaDetalhe` espelha a
+      // regra do servidor (admin sempre vê); e como /api/financeiro já mascara
+      // na origem, para quem não tem a permissão isto é no-op.
+      : aggDetalheDRE(data, regime, linhaSel.ref, mesSel, linhaSel.label, verFolhaDetalhe)),
+    [aggOn, linhaSel, data, regime, mesSel, verFolhaDetalhe],
+  )
+
+  const detalhe: DetalheDREResp = aggOn
+    ? (detalheAgg ?? DETALHE_VAZIO)
+    : (detalheLocal ?? DETALHE_VAZIO)
+
+  const carregandoDetalhe = aggOn && !!linhaId && open && !detalheAgg && !erroDetalhe
 
   const kindModal = (rowKind: DRERow['kind']): 'n3' | 'agrupador' | 'subtotal' => {
     if (rowKind === 'l3') return 'n3'
@@ -328,17 +383,19 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
     return 'subtotal'
   }
 
-  const abrirPeriodo = (row: DRERow) => {
+  const selecionar = (row: DRERow, mes?: string) => {
     // TODO gate: se !admin && !temAcesso('lancamentos') → mensagem "sem permissão, contate o admin"
-    setLinhaSel({ label: row.label, matcher: matcherForRow(row), kind: kindModal(row.kind) })
-    setMesSel(undefined)
-    setOpen(true)
-  }
-  const abrirMes = (row: DRERow, mes: string) => (e: React.MouseEvent) => {
-    e.stopPropagation()
-    setLinhaSel({ label: row.label, matcher: matcherForRow(row), kind: kindModal(row.kind) })
+    const ref = linhaRefForRow(row)
+    if (!ref) return
+    setLinhaSel({ label: row.label, ref, kind: kindModal(row.kind) })
     setMesSel(mes)
     setOpen(true)
+  }
+
+  const abrirPeriodo = (row: DRERow) => selecionar(row)
+  const abrirMes = (row: DRERow, mes: string) => (e: React.MouseEvent) => {
+    e.stopPropagation()
+    selecionar(row, mes)
   }
 
   // ── Build dreRows ──────────────────────────────────────────────────────────
@@ -765,8 +822,10 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
         open={open}
         onOpenChange={setOpen}
         linhaSel={linhaSel}
-        linhas={linhasModal}
-        dadosProtegidos={dadosProtegidos}
+        linhas={detalhe.rows}
+        dadosProtegidos={detalhe.dadosProtegidos}
+        carregando={carregandoDetalhe}
+        erro={erroDetalhe}
         periodo={periodoLabel(mesSel, filters?.dateFrom, filters?.dateTo)}
       />
 
@@ -777,16 +836,27 @@ export function DRE({ data, filters }: { data: Lancamento[]; filters?: Filters }
 // ─── Sheet de conferência por linha ──────────────────────────────────────────
 
 function DRESheet({
-  open, onOpenChange, linhaSel, linhas, dadosProtegidos, periodo,
+  open, onOpenChange, linhaSel, linhas, dadosProtegidos, carregando, erro, periodo,
 }: {
   open: boolean
   onOpenChange: (b: boolean) => void
-  linhaSel: { label: string; matcher: (r: Lancamento) => boolean; kind: 'n3' | 'agrupador' | 'subtotal' } | null
-  linhas: ReturnType<typeof detalheDRE>
+  linhaSel: { label: string; ref: LinhaRef; kind: 'n3' | 'agrupador' | 'subtotal' } | null
+  linhas: DetalheRow[]
   /** Alguma linha teve contraparte/descrição mascaradas por falta de ver_folha_detalhe. */
   dadosProtegidos: boolean
+  /** Só no caminho agregado: resposta a caminho. Com a flag OFF é sempre false. */
+  carregando: boolean
+  /** Só no caminho agregado: a requisição do detalhe falhou. */
+  erro?: unknown
   periodo: string
 }) {
+  // Enquanto carrega (ou em erro) não dá para afirmar contagem, categoria nem
+  // total: o array está vazio porque a resposta não chegou, não porque a linha
+  // não tem lançamento. Mostrar "0 lançamentos · Total R$ 0,00" nesse instante
+  // é exatamente o sintoma do bug que esta correção resolve — então esses
+  // números só aparecem quando existem de verdade.
+  const pendente = carregando || !!erro
+
   const hasReceita = linhas.some(l => l.tipo === 'Receita')
   const hasDespesa = linhas.some(l => l.tipo === 'Despesa')
   const isMixed = hasReceita && hasDespesa
@@ -817,38 +887,60 @@ function DRESheet({
         <SheetHeader>
           <div className="flex items-center gap-2 flex-wrap">
             <SheetTitle className="text-[14px]">{linhaSel?.label ?? ''}</SheetTitle>
-            <span
-              className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none"
-              style={{ background: badgeBg, color: badgeFg }}
-            >
-              {badgeLabel}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
-            {periodo} · {linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
-            {linhaSel && linhaSel.kind !== 'n3' && (
-              <> · {catCount} categoria{catCount === 1 ? '' : 's'}</>
+            {!pendente && (
+              <span
+                className="rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none"
+                style={{ background: badgeBg, color: badgeFg }}
+              >
+                {badgeLabel}
+              </span>
             )}
           </div>
-          {dadosProtegidos && (
+          <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
+            {periodo}
+            {!pendente && (
+              <>
+                {' · '}{linhas.length} lançamento{linhas.length === 1 ? '' : 's'}
+                {linhaSel && linhaSel.kind !== 'n3' && (
+                  <> · {catCount} categoria{catCount === 1 ? '' : 's'}</>
+                )}
+              </>
+            )}
+          </div>
+          {dadosProtegidos && !pendente && (
             <div className="mt-1 text-[11px]" style={{ color: 'var(--ink3)' }}>
               Alguns lançamentos estão com contraparte e descrição ocultas.
               Os valores e o total não foram alterados.
             </div>
           )}
-          <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
-            {isMixed ? (
-              <>
-                <span>Receita: <strong style={{ color: 'var(--green)' }}>{fRSigned(totalRec)}</strong></span>
-                <span>Despesa: <strong style={{ color: 'var(--red)' }}>{fRSigned(totalDesp)}</strong></span>
-                <span>Líquido: <strong style={{ color: totalLiq >= 0 ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
-              </>
-            ) : (
-              <span>Total: <strong style={{ color: hasReceita ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
-            )}
-          </div>
+          {!pendente && (
+            <div className="mt-2 flex gap-4 text-[11px]" style={{ color: 'var(--ink3)' }}>
+              {isMixed ? (
+                <>
+                  <span>Receita: <strong style={{ color: 'var(--green)' }}>{fRSigned(totalRec)}</strong></span>
+                  <span>Despesa: <strong style={{ color: 'var(--red)' }}>{fRSigned(totalDesp)}</strong></span>
+                  <span>Líquido: <strong style={{ color: totalLiq >= 0 ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
+                </>
+              ) : (
+                <span>Total: <strong style={{ color: hasReceita ? 'var(--green)' : 'var(--red)' }}>{fRSigned(totalLiq)}</strong></span>
+              )}
+            </div>
+          )}
         </SheetHeader>
 
+        {/* Erro e carregamento vivem DENTRO do Sheet: a DRE já está renderizada
+            e não depende desta chamada, então falhar aqui não derruba a tela.
+            Só existe no caminho agregado — com a flag OFF o cálculo é síncrono
+            e nenhuma requisição pode falhar. */}
+        {erro ? (
+          <div className="mt-6 text-[11px]" style={{ color: isForbidden(erro) ? 'var(--ink3)' : 'var(--red)' }}>
+            {isForbidden(erro)
+              ? 'Você não tem permissão para ver o detalhe desta linha.'
+              : `Não foi possível carregar o detalhe: ${String(erro)}`}
+          </div>
+        ) : carregando ? (
+          <div className="mt-6 text-[11px]" style={{ color: 'var(--ink3)' }}>Carregando lançamentos…</div>
+        ) : (
         <div className="mt-4">
           <table className="w-full" style={{ tableLayout: 'fixed' }}>
             <colgroup>
@@ -875,7 +967,7 @@ function DRESheet({
             <tbody>
               {linhas.map((l, i) => (
                 <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
-                  <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDt(l.data)}</td>
+                  <td className="py-2 pl-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--ink3)' }}>{fDtYmd(l.data)}</td>
                   <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.desc}>{l.desc}</td>
                   <td className="py-2 text-[11px]" style={{ color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.contraparte}>{l.contraparte}</td>
                   <td className="py-2 text-[11px]" style={{ color: 'var(--ink3)', overflow: 'hidden', textOverflow: 'ellipsis' }} title={l.cc}>{l.cc}</td>
@@ -912,6 +1004,7 @@ function DRESheet({
             </tfoot>
           </table>
         </div>
+        )}
       </SheetContent>
     </Sheet>
   )
